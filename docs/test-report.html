@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Test Report — Distributed Job Scheduler</title>
+<meta name="description" content="Test strategy, principles, results and honest gaps for the distributed job scheduler." />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root{
+    --bg:#DCE4EF;
+    --paper:#F5F8FC;
+    --card:#FFFFFF;
+    --ink:#1B2A4A;
+    --ink-2:#33456B;
+    --muted:#5A6B8C;
+    --line:#C3CFE2;
+    --line-strong:#9DADC9;
+    --pass:#0E7C7B; --pass-bg:#DDF0EE;
+    --warn:#9A6B0F; --warn-bg:#FFF3D1;
+    --fail:#C0392B; --fail-bg:#FBE3E0;
+    --prop:#5B5BD6; --prop-bg:#E7E7FB;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --disp:'Sora',system-ui,sans-serif;
+    --body:'Inter',system-ui,-apple-system,sans-serif;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  body::before{content:'';position:fixed;inset:0;pointer-events:none;
+    background-image:radial-gradient(circle at 1px 1px, rgba(27,42,74,.14) 1px, transparent 0);
+    background-size:22px 22px}
+  a{color:var(--prop)}
+  a:focus-visible,button:focus-visible{outline:3px solid var(--prop);outline-offset:2px;border-radius:6px}
+  .wrap{max-width:1060px;margin:0 auto;padding:26px 20px 90px;position:relative}
+  .topnav{position:sticky;top:14px;z-index:20;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+    background:rgba(255,255,255,.9);backdrop-filter:blur(8px);border:1.5px solid var(--line-strong);
+    border-radius:999px;padding:8px 10px;margin-bottom:22px;box-shadow:0 10px 30px rgba(27,42,74,.12)}
+  .topnav .brand{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    background:var(--ink);color:#fff;border-radius:999px;padding:6px 13px;margin-right:2px}
+  .topnav a{text-decoration:none;font-size:13px;font-weight:600;color:var(--ink-2);padding:6px 12px;border-radius:999px}
+  .topnav a:hover{background:var(--paper);color:var(--ink)}
+  .hero{background:var(--ink);color:#E9EEF8;border-radius:20px;padding:40px 38px;position:relative;overflow:hidden;
+    box-shadow:0 24px 60px rgba(27,42,74,.3)}
+  .hero::after{content:'ъра';position:absolute;right:18px;bottom:-38px;font-family:var(--disp);font-weight:800;
+    font-size:150px;color:rgba(255,255,255,.05);letter-spacing:-.05em;pointer-events:none}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#9FB4D8;margin-bottom:12px}
+  .eyebrow b{color:#7DE3C3;font-weight:600}
+  h1{font-family:var(--disp);font-weight:800;font-size:clamp(30px,4.4vw,48px);line-height:1.03;letter-spacing:-.025em;margin-bottom:14px}
+  h1 .thin{color:#9FB4D8;font-weight:400}
+  .lede{max-width:64ch;color:#C3D0E8;font-size:15.5px}
+  .lede strong{color:#fff}
+  .lede code{font-family:var(--mono);font-size:.85em;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:1px 7px;white-space:nowrap}
+  .verdict-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:24px}
+  .verdict{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:13px;padding:13px 15px}
+  .verdict .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:#9FB4D8;margin-bottom:5px}
+  .verdict .v{font-family:var(--disp);font-weight:700;font-size:21px}
+  .verdict .s{font-size:12px;color:#9FB4D8}
+  .verdict .v.ok{color:#7DE3C3}
+  /* pyramid — the signature: shape encodes the strategy */
+  .panel{background:var(--card);border:1.5px solid var(--line-strong);border-radius:18px;padding:28px 30px;margin-top:22px;
+    box-shadow:0 14px 40px rgba(27,42,74,.1)}
+  .panel-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px;flex-wrap:wrap}
+  .panel-head .lvl{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;background:var(--ink);color:#fff;border-radius:999px;padding:4px 12px}
+  .panel-head h2{font-family:var(--disp);font-size:22px;letter-spacing:-.01em}
+  .panel p.sub{color:var(--ink-2);max-width:70ch;font-size:14px}
+  .pyramid{margin:20px auto 6px;max-width:640px}
+  .py-row{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+  .py-bar{height:44px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;
+    font-family:var(--mono);font-size:12.5px;font-weight:600;color:#fff;min-width:0;
+    animation:grow 1s cubic-bezier(.2,.8,.2,1) backwards}
+  @keyframes grow{from{transform:scaleX(.2);opacity:0}to{transform:scaleX(1);opacity:1}}
+  .py-row:nth-child(1) .py-bar{width:100%;background:var(--pass);animation-delay:.05s}
+  .py-row:nth-child(2) .py-bar{width:86%;margin:0 auto;background:#2A9D8F;animation-delay:.12s}
+  .py-row:nth-child(3) .py-bar{width:72%;margin:0 auto;background:var(--prop);animation-delay:.19s}
+  .py-row:nth-child(4) .py-bar{width:58%;margin:0 auto;background:#7C6CF0;animation-delay:.26s}
+  .py-row:nth-child(5) .py-bar{width:44%;margin:0 auto;background:var(--warn);animation-delay:.33s}
+  .py-row:nth-child(6) .py-bar{width:32%;margin:0 auto;background:var(--fail);animation-delay:.4s}
+  .py-cap{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;margin-top:10px}
+  .principles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}
+  .pr{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .pr h4{font-family:var(--disp);font-size:13.5px;margin-bottom:4px}
+  .pr p{font-size:12.5px;color:var(--ink-2)}
+  /* coverage */
+  .cov{margin-top:16px;display:flex;flex-direction:column;gap:10px}
+  .cov-row{display:grid;grid-template-columns:170px 1fr 64px;gap:12px;align-items:center;font-size:13px}
+  .cov-row .pkg{font-family:var(--mono);font-size:12px}
+  .cov-track{background:var(--paper);border:1px solid var(--line);border-radius:999px;height:16px;overflow:hidden}
+  .cov-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--pass),#2A9D8F);width:0;transition:width 1.2s cubic-bezier(.2,.8,.2,1)}
+  .cov-fill.mid{background:linear-gradient(90deg,#D9A521,var(--warn))}
+  .cov-fill.low{background:linear-gradient(90deg,#E0705F,var(--fail))}
+  .cov-fill.zero{background:repeating-linear-gradient(45deg,var(--paper),var(--paper) 4px,var(--line) 4px,var(--line) 8px)}
+  .cov-row .pct{font-family:var(--mono);font-size:12px;text-align:right}
+  /* filter + table */
+  .filterbar{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 12px}
+  .filterbar button{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);background:#fff;color:var(--ink);border-radius:999px;padding:7px 14px;cursor:pointer}
+  .filterbar button[aria-pressed="true"]{background:var(--ink);color:#fff}
+  table.tests{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;border:1.5px solid var(--line-strong);border-radius:12px;overflow:hidden}
+  table.tests th{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+    text-align:left;background:var(--paper);padding:10px 14px;border-bottom:1.5px solid var(--line-strong)}
+  table.tests td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.tests tr:last-child td{border-bottom:0}
+  table.tests tr:hover td{background:var(--paper)}
+  td.tname{font-family:var(--mono);font-size:12px;font-weight:600;white-space:nowrap}
+  .tag{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .tag.unit{background:var(--pass-bg);color:var(--pass)}
+  .tag.prop{background:var(--prop-bg);color:var(--prop)}
+  .tag.contract{background:#E3F2FD;color:#1565C0}
+  .tag.integ{background:#F3E5F5;color:#6A1B9A}
+  .tag.fault{background:var(--warn-bg);color:var(--warn)}
+  .tag.conc{background:var(--fail-bg);color:var(--fail)}
+  .tag.live{background:#E0E7F5;color:#33456B}
+  td.twhy{color:var(--ink-2);font-size:12.5px}
+  .bugbox{border:1.5px solid var(--warn);background:var(--warn-bg);border-radius:13px;padding:18px 20px;margin-top:16px}
+  .bugbox h4{font-family:var(--disp);font-size:15px;margin-bottom:6px}
+  .bugbox p{font-size:13.5px;color:var(--ink-2)}
+  .bugbox code,.repro code{font-family:var(--mono);font-size:.86em;background:#fff;border:1px solid var(--line-strong);border-radius:6px;padding:1px 7px;white-space:nowrap}
+  .gap{display:flex;gap:12px;align-items:flex-start;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:10px}
+  .gap .dot{flex-shrink:0;width:11px;height:11px;border-radius:50%;margin-top:6px}
+  .gap p{font-size:13.5px;color:var(--ink-2)}
+  .gap strong{color:var(--ink)}
+  .repro{background:var(--ink);color:#DCE4F5;border-radius:13px;padding:18px 20px;margin-top:16px}
+  .repro h4{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#9FB4D8;margin-bottom:10px}
+  .repro ol{margin-left:20px;display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:12.5px}
+  footer{margin-top:22px;font-family:var(--mono);font-size:11.5px;color:var(--muted);text-align:center}
+  @media (max-width:760px){
+    .hero{padding:28px 22px}.panel{padding:20px 18px}
+    .verdict-strip{grid-template-columns:1fr 1fr}.principles{grid-template-columns:1fr}
+    .cov-row{grid-template-columns:120px 1fr 52px}
+    table.tests td:nth-child(3),table.tests th:nth-child(3){display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="topnav" aria-label="Report sections">
+    <span class="brand">Test report · race-clean</span>
+    <a href="#strategy">Strategy</a>
+    <a href="#results">Results</a>
+    <a href="#bug">Bug found</a>
+    <a href="#gaps">Gaps</a>
+    <a href="#repro">Reproduce</a>
+  </nav>
+
+  <header class="hero">
+    <div class="eyebrow">Distributed job scheduler · <b>85 tests + 1 fuzz + 4 benchmarks · 0 failures</b></div>
+    <h1>Tested like it will fail. <span class="thin">Because it will.</span></h1>
+    <p class="lede">Seven layers, from an exhaustive 36-case state-machine matrix to fault-injected broker outages and real gRPC traffic over <code>bufconn</code> — run with <code>-race</code>, plus a 15&nbsp;s fuzz run (6.35M execs, no crash). Testing caught <strong>two real bugs</strong> (a vacuous reconcile test, a panic-stranding worker) and forced production fixes for both. What remains untested is listed honestly below.</p>
+    <div class="verdict-strip">
+      <div class="verdict"><div class="k">Test functions</div><div class="v ok">85 + fuzz</div><div class="s">170 cases incl. subtests</div></div>
+      <div class="verdict"><div class="k">Race detector</div><div class="v ok">Clean</div><div class="s">go test -race ./...</div></div>
+      <div class="verdict"><div class="k">Domain coverage</div><div class="v ok">97.5%</div><div class="s">service 84.7% · memory 94.3%</div></div>
+      <div class="verdict"><div class="k">Fuzz · backoff</div><div class="v ok">6.35M execs</div><div class="s">15 s · 0 failures</div></div>
+    </div>
+  </header>
+
+  <section class="panel" id="strategy">
+    <div class="panel-head"><span class="lvl">Strategy</span><h2>The pyramid, with honest counts</h2></div>
+    <p class="sub">Shape carries meaning: many fast solitary unit tests at the base, few slow sociable integration tests near the top, live-backend contracts pinned for CI. Concurrency is a dimension across all layers — the whole suite runs under <code style="font-family:var(--mono)">-race</code>, plus dedicated race tests. Counts are test functions; subtests push executed cases past 170.</p>
+    <div class="pyramid" role="img" aria-label="Test pyramid: 24 unit, 7 property plus fuzz, 21 contract, 22 integration, 4 fault, 2 concurrency, 5 live CI contracts">
+      <div class="py-row"><div class="py-bar"><span>Unit · solitary</span><span>24</span></div></div>
+      <div class="py-row"><div class="py-bar"><span>Property + fuzz</span><span>7 + 1</span></div></div>
+      <div class="py-row"><div class="py-bar"><span>Contract · interfaces</span><span>21</span></div></div>
+      <div class="py-row"><div class="py-bar"><span>Integration · sociable</span><span>22</span></div></div>
+      <div class="py-row"><div class="py-bar"><span>Fault injection</span><span>4</span></div></div>
+      <div class="py-row"><div class="py-bar"><span>Concurrency + live CI</span><span>2 + 5</span></div></div>
+    </div>
+    <p class="py-cap">width = count · color = cost of failure escaping that layer</p>
+    <div class="principles">
+      <div class="pr"><h4>Deterministic, no sleeps</h4><p>Backoff is injected (<code style="font-family:var(--mono)">ConstantBackoff</code>), reconcile age is a settable threshold. The only timing test uses a 5&nbsp;ms TTL.</p></div>
+      <div class="pr"><h4>Test the spec, not the code</h4><p>The 6×6 transition matrix and the outbox ceiling test the documented invariants — a future table edit that opens an illegal edge fails first.</p></div>
+      <div class="pr"><h4>Contracts over mocks</h4><p>Services are tested against real in-memory collaborators. The memory contract suite doubles as the acceptance bar for the Postgres backend.</p></div>
+    </div>
+  </section>
+
+  <section class="panel" id="results">
+    <div class="panel-head"><span class="lvl">Results</span><h2>Coverage, measured — not claimed</h2></div>
+    <p class="sub"><code style="font-family:var(--mono)">go test ./... -race -count=1 -cover</code> · Go 1.26.5 darwin/arm64. Generated protobuf code and untested <code style="font-family:var(--mono)">cmd/</code> entrypoints are excluded from the celebration.</p>
+    <div class="cov">
+      <div class="cov-row"><span class="pkg">internal/domain</span><div class="cov-track"><div class="cov-fill" data-w="97.5"></div></div><span class="pct">97.5%</span></div>
+      <div class="cov-row"><span class="pkg">internal/memory</span><div class="cov-track"><div class="cov-fill" data-w="94.3"></div></div><span class="pct">94.3%</span></div>
+      <div class="cov-row"><span class="pkg">internal/service</span><div class="cov-track"><div class="cov-fill" data-w="84.7"></div></div><span class="pct">84.7%</span></div>
+      <div class="cov-row"><span class="pkg">internal/app</span><div class="cov-track"><div class="cov-fill mid" data-w="65.6"></div></div><span class="pct">65.6%</span></div>
+      <div class="cov-row"><span class="pkg">internal/lease</span><div class="cov-track"><div class="cov-fill mid" data-w="52.5"></div></div><span class="pct">52.5%</span></div>
+      <div class="cov-row"><span class="pkg">internal/broker</span><div class="cov-track"><div class="cov-fill mid" data-w="50.0"></div></div><span class="pct">50.0%</span></div>
+      <div class="cov-row"><span class="pkg">internal/postgres</span><div class="cov-track"><div class="cov-fill zero" data-w="100"></div></div><span class="pct">0% · CI only</span></div>
+    </div>
+
+    <div class="filterbar" role="group" aria-label="Filter tests by level">
+      <button data-f="all" aria-pressed="true">All 85</button>
+      <button data-f="unit" aria-pressed="false">Unit</button>
+      <button data-f="prop" aria-pressed="false">Property</button>
+      <button data-f="contract" aria-pressed="false">Contract</button>
+      <button data-f="integ" aria-pressed="false">Integration</button>
+      <button data-f="fault" aria-pressed="false">Fault</button>
+      <button data-f="conc" aria-pressed="false">Concurrency</button>
+      <button data-f="live" aria-pressed="false">Live CI</button>
+    </div>
+    <div style="overflow-x:auto">
+    <table class="tests" id="testTable">
+      <thead><tr><th>Test</th><th>Level</th><th>What it guards</th></tr></thead>
+      <tbody>
+        <tr data-l="unit"><td class="tname">JobStateMachine_Valid/Invalid/CanCancel</td><td><span class="tag unit">unit</span></td><td class="twhy">Pre-existing table tests; kept as the fast regression net.</td></tr>
+        <tr data-l="unit"><td class="tname">Backoff_Bounds / ConstantBackoff</td><td><span class="tag unit">unit</span></td><td class="twhy">Pre-existing golden bounds; kept.</td></tr>
+        <tr data-l="unit"><td class="tname">TransitionTo_RefreshesUpdatedAt</td><td><span class="tag unit">unit</span></td><td class="twhy">Fix W1: in-memory copy must not serve a stale timestamp.</td></tr>
+        <tr data-l="unit"><td class="tname">NewTenant_HashesKey</td><td><span class="tag unit">unit</span></td><td class="twhy">Fix W3: 64-char hex hash, constant-time verify, empty rejected.</td></tr>
+        <tr data-l="unit"><td class="tname">Outbox_Ceiling</td><td><span class="tag unit">unit</span></td><td class="twhy">Fix W2: MaxOutboxRetries trips abandonment exactly at the ceiling.</td></tr>
+        <tr data-l="unit"><td class="tname">NewJob_Defaults</td><td><span class="tag unit">unit</span></td><td class="twhy">Constructor defaults (pending, 3 attempts, <code>{}</code>) + rejects bad priority.</td></tr>
+        <tr data-l="unit"><td class="tname">PriorityMapper_ExplicitWeights</td><td><span class="tag unit">unit</span></td><td class="twhy">Fix C2: ordinals 1–4 map to weights 0/2/5/10, round-trips losslessly.</td></tr>
+        <tr data-l="unit"><td class="tname">StatusMapper_RoundTrip</td><td><span class="tag unit">unit</span></td><td class="twhy">All six statuses survive proto conversion both ways.</td></tr>
+        <tr data-l="unit"><td class="tname">Broker_PayloadIsolation</td><td><span class="tag unit">unit</span></td><td class="twhy">Caller-side slice mutation must not corrupt the stored record.</td></tr>
+        <tr data-l="prop"><td class="tname">StateMachine_FullMatrix ×36</td><td><span class="tag prop">property</span></td><td class="twhy">Exhaustive 6×6: every legal edge applies, every illegal edge returns ErrInvalidTransition without mutating state.</td></tr>
+        <tr data-l="prop"><td class="tname">StateMachine_UpdatedAtMonotonic</td><td><span class="tag prop">property</span></td><td class="twhy">Five-step chain: UpdatedAt strictly increases on every transition.</td></tr>
+        <tr data-l="prop"><td class="tname">StateMachine_TerminalStatesAreSinks</td><td><span class="tag prop">property</span></td><td class="twhy">succeeded/cancelled/dead accept no outgoing edge — cascade logic depends on it.</td></tr>
+        <tr data-l="prop"><td class="tname">DetectDependencyCycle</td><td><span class="tag prop">property</span></td><td class="twhy">Fix W4: a→c→b→a rejected, self-loop rejected, benign reparent allowed.</td></tr>
+        <tr data-l="prop"><td class="tname">Backoff_PropertyBoundsAcrossAttempts</td><td><span class="tag prop">property</span></td><td class="twhy">100 draws × 5 ceilings: delay always in [0, min(max, base·2ⁿ)].</td></tr>
+        <tr data-l="prop"><td class="tname">Backoff_DegenerateInputs</td><td><span class="tag prop">property</span></td><td class="twhy">Negative/huge attempts, factor ≤ 1: never panics, never exceeds cap.</td></tr>
+        <tr data-l="prop"><td class="tname">Backoff_JitterProducesVariance</td><td><span class="tag prop">property</span></td><td class="twhy">50 draws yield ≥5 distinct values — proves herd protection is alive.</td></tr>
+        <tr data-l="prop"><td class="tname">FuzzExponentialBackoffBounds</td><td><span class="tag prop">property · fuzz</span></td><td class="twhy">15 s, 6.35M execs, adversarial base/max/factor/attempt — 0 failures.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_CancelRules</td><td><span class="tag contract">contract</span></td><td class="twhy">Pending cancels; double-cancel and unknown id fail with the right sentinels.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_FencingTokens</td><td><span class="tag contract">contract</span></td><td class="twhy">Stale tokens rejected on both guarded writes; fresh token proceeds.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_ReadyOrderingAndGating</td><td><span class="tag contract">contract</span></td><td class="twhy">ORDER BY priority DESC; future jobs withheld; children gated on parent success.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_PaginationAndFilter</td><td><span class="tag contract">contract</span></td><td class="twhy">Limit/offset/total correct; tenants never see each other's jobs.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_OutboxLifecycle</td><td><span class="tag contract">contract</span></td><td class="twhy">Fresh rows withheld until olderThan; failures bump; ceiling skips; publish+purge works.</td></tr>
+        <tr data-l="contract"><td class="tname">Contract_TenantAndEvents</td><td><span class="tag contract">contract</span></td><td class="twhy">Hash lookup, unknown-hash error, chronological audit trail.</td></tr>
+        <tr data-l="contract"><td class="tname">Broker_IdempotentPublish</td><td><span class="tag contract">contract</span></td><td class="twhy">ADR 011: duplicate (key, messageID) swallowed; new IDs stored.</td></tr>
+        <tr data-l="contract"><td class="tname">Lease_Lifecycle</td><td><span class="tag contract">contract</span></td><td class="twhy">Acquire→renew→release; non-owner renew fails; re-acquire mints higher token.</td></tr>
+        <tr data-l="contract"><td class="tname">Lease_ExpiredLeaseReacquirable</td><td><span class="tag contract">contract</span></td><td class="twhy">Crashed-holder TTL expiry unblocks a new owner (ADR 002 scenario).</td></tr>
+        <tr data-l="integ"><td class="tname">SubmitDispatchComplete</td><td><span class="tag integ">integration</span></td><td class="twhy">Parent/child submit → gate holds → dispatch → fenced completion.</td></tr>
+        <tr data-l="integ"><td class="tname">CascadeAbortOnTerminalFailure</td><td><span class="tag integ">integration</span></td><td class="twhy">ADR 010: exhausted parent goes dead, child auto-cancelled.</td></tr>
+        <tr data-l="integ"><td class="tname">FencingTokenRejectsZombieWrite</td><td><span class="tag integ">integration</span></td><td class="twhy">ADR 009 over the public API: bumped token makes old report stale.</td></tr>
+        <tr data-l="integ"><td class="tname">OutboxReconcileSkipsAbandoned</td><td><span class="tag integ">integration</span></td><td class="twhy">Poisoned rows never burn reconcile budget.</td></tr>
+        <tr data-l="integ"><td class="tname">WorkerRunOnce</td><td><span class="tag integ">integration</span></td><td class="twhy">Bounded worker executes a job lease→run→report without help.</td></tr>
+        <tr data-l="integ"><td class="tname">PriorityOrderingEndToEnd</td><td><span class="tag integ">integration</span></td><td class="twhy">Critical beats low through the real dispatch path, any insert order.</td></tr>
+        <tr data-l="integ"><td class="tname">RetryThenDeadWithCascade</td><td><span class="tag integ">integration</span></td><td class="twhy">Fail→pending+NextRetryAt+requeue row, then fail→dead+cascade. The full retry story.</td></tr>
+        <tr data-l="integ"><td class="tname">ReconcilePublishesIdempotently</td><td><span class="tag integ">integration</span></td><td class="twhy">First reconcile publishes with job_id; second is a no-op.</td></tr>
+        <tr data-l="fault"><td class="tname">BrokerOutageThenRecovery</td><td><span class="tag fault">fault</span></td><td class="twhy">Downed broker → retry_count grows, nothing lost; recovery delivers.</td></tr>
+        <tr data-l="fault"><td class="tname">ZombieWriteAfterLeaseLoss</td><td><span class="tag fault">fault</span></td><td class="twhy">GC-pause scenario: late winner's write dies harmlessly.</td></tr>
+        <tr data-l="fault"><td class="tname">CancelCascadesTransitively</td><td><span class="tag fault">fault</span></td><td class="twhy">Grandparent cancel reaches grandchildren, skipping terminal jobs.</td></tr>
+        <tr data-l="fault"><td class="tname">SubmitValidation</td><td><span class="tag fault">fault</span></td><td class="twhy">Unknown parent rejected before anything is persisted.</td></tr>
+        <tr data-l="conc"><td class="tname">Lease_ContentionSingleWinner</td><td><span class="tag conc">concurrency</span></td><td class="twhy">8 racers, exactly 1 leaseholder. -race clean.</td></tr>
+        <tr data-l="conc"><td class="tname">Broker_ConcurrentPublishers</td><td><span class="tag conc">concurrency</span></td><td class="twhy">8×25 parallel publishes → exactly 200 records. -race clean.</td></tr>
+        <tr data-l="unit"><td class="tname">NewJob_ValidationTable ×10</td><td><span class="tag unit">unit</span></td><td class="twhy">Every constructor rejection (nil tenant, blank name, gap weights) is its own row.</td></tr>
+        <tr data-l="unit"><td class="tname">IsValidPriority / CanCancel / IsTerminal tables</td><td><span class="tag unit">unit</span></td><td class="twhy">Defined weights valid, gap weights invalid; cancel/terminal matrix per status.</td></tr>
+        <tr data-l="unit"><td class="tname">ValidateTransition_ErrorContract</td><td><span class="tag unit">unit</span></td><td class="twhy">Wrapping preserves ErrInvalidTransition; all 8 sentinels distinct and non-nil.</td></tr>
+        <tr data-l="unit"><td class="tname">Outbox_Methods / Tenant_HashContract / DefaultBackoff</td><td><span class="tag unit">unit</span></td><td class="twhy">Publish stamps, failure accumulation, ceiling boundary; hash determinism; default values pinned.</td></tr>
+        <tr data-l="unit"><td class="tname">DomainJobToProto mapping + nil/empty</td><td><span class="tag unit">unit</span></td><td class="twhy">Every wire field asserted; absent optionals stay nil; LOW weight → LOW ordinal.</td></tr>
+        <tr data-l="unit"><td class="tname">ParseJobID / StatusTable / gRPC error codes</td><td><span class="tag unit">unit</span></td><td class="twhy">Bad ids rejected; UNSPECIFIED→pending; stale→Aborted, illegal→FailedPrecondition, missing→NotFound.</td></tr>
+        <tr data-l="contract"><td class="tname">Memory query semantics ×7</td><td><span class="tag contract">contract</span></td><td class="twhy">Locking reads, status/priority filters, retry-query exclusions, update persistence, dependent-empty, outbox limit/order/purge scoping, transactor propagation.</td></tr>
+        <tr data-l="contract"><td class="tname">App wiring ×3</td><td><span class="tag contract">contract</span></td><td class="twhy">Memory defaults pinned, WORKER_ID override, malformed DSN fails fast.</td></tr>
+        <tr data-l="integ"><td class="tname">Scheduler_ErrorPaths ×12</td><td><span class="tag integ">integration</span></td><td class="twhy">Unknown tenant/job, normalization defaults, cancel-refused, invalid report, empty dispatch, retry-due promotion, nil-broker reconcile, tenant scoping.</td></tr>
+        <tr data-l="integ"><td class="tname">Worker edges ×6</td><td><span class="tag integ">integration</span></td><td class="twhy">Drain stops intake, handler error recycles with NextRetryAt, panic fails the job not the worker, unknown heartbeat/cancel, lease contention skips.</td></tr>
+        <tr data-l="integ"><td class="tname">gRPC over bufconn ×3</td><td><span class="tag integ">integration</span></td><td class="twhy">Full submit→events flow on a real transport; InvalidArgument/NotFound/FailedPrecondition codes; async execute→drain.</td></tr>
+        <tr data-l="integ"><td class="tname">Distributed e2e ×4</td><td><span class="tag integ">integration</span></td><td class="twhy">Worker-executed parent→child chain, flaky-handler recovery, two workers race one job (single execution), tenant isolation.</td></tr>
+        <tr data-l="live"><td class="tname">Postgres live contract ×4</td><td><span class="tag live">live ci</span></td><td class="twhy">Tenant round-trip, fencing, SKIP LOCKED fetch, tx atomicity. Skip without DATABASE_URL.</td></tr>
+        <tr data-l="live"><td class="tname">Redis live lease ×1 + benchmarks ×4</td><td><span class="tag live">live ci</span></td><td class="twhy">Acquire/exclusion/renew/release on real Redis (skip-guarded); hot-path benchmarks for transition, delay, hash.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="py-cap">Contract_ConcurrentCreates (50 parallel job creates, zero lost writes) lives in the contract suite and runs under -race — counted once, guards twice.</p>
+  </section>
+
+  <section class="panel" id="bug">
+    <div class="panel-head"><span class="lvl">Proof it works</span><h2>Testing found real bugs — twice</h2></div>
+    <div class="bugbox">
+      <h4>① Vacuous reconcile tests → production fix: <code>Scheduler.ReconcileThreshold</code></h4>
+      <p>Two new tests failed on first run — not from bad assertions but because <code>ReconcileOutbox</code> hard-coded a 5&nbsp;s freshness gate while tests submit fresh rows. One test even passed <em>vacuously</em> (0 reconciled for the wrong reason). Fix: the threshold is now a field defaulting to 5&nbsp;s in production and set to 0 in tests, so the suite proves the ceiling-skip instead of the clock.</p>
+    </div>
+    <div class="bugbox" style="margin-top:10px">
+      <h4>② Panicking handler would strand jobs → production fix: recover in <code>Worker.execute</code></h4>
+      <p>Writing the worker-edge tests exposed that a panicking user handler crashed the goroutine past the lease release — the job stuck in <code>running</code> forever with a leaked lease. Fix: recover inside <code>execute</code>, convert to a failure report (→ normal retry path), always release. Covered by <code>HandlerPanicFailsJobNotWorker</code>, including worker-survives follow-up.</p>
+    </div>
+  </section>
+
+  <section class="panel" id="gaps">
+    <div class="panel-head"><span class="lvl">Honesty</span><h2>What is still not tested</h2></div>
+    <div class="gap"><span class="dot" style="background:var(--warn)"></span><p><strong>Live backends need CI to execute.</strong> Postgres (4 tests) and Redis (1 test) contracts are written and skip-guarded — they run with <code>DATABASE_URL</code> / <code>REDIS_ADDR</code> set. The RabbitMQ broker implementation and <code>cmd/</code> binaries remain untested by design.</p></div>
+    <div class="gap"><span class="dot" style="background:var(--pass)"></span><p><strong>What <em>is</em> solid:</strong> domain logic (97.5%), repository contracts on memory (94.3%), service behavior through the public API and real gRPC transport (84.7%), plus the full distributed lifecycle — gating, fencing, retries, cascade, outbox, competing workers.</p></div>
+  </section>
+
+  <section class="panel" id="repro">
+    <div class="panel-head"><span class="lvl">Reproduce</span><h2>Run it yourself</h2></div>
+    <div class="repro">
+      <h4>Every number on this page comes from these commands</h4>
+      <ol>
+        <li>go test ./... -race -count=1 -cover</li>
+        <li>go test ./internal/domain/ -run FuzzExponentialBackoffBounds -fuzz FuzzExponentialBackoffBounds -fuzztime 15s</li>
+        <li>go test ./... -run xxx -bench . -benchtime 1000000x</li>
+        <li>go vet ./... &amp;&amp; gofmt -l internal/ cmd/</li>
+        <li>go run ./cmd/demo</li>
+        <li>DATABASE_URL=... REDIS_ADDR=... go test ./internal/postgres/ ./internal/lease/ -v</li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>85 tests + 1 fuzz + 4 benchmarks · 170 executed cases · race-clean · Go 1.26.5 darwin/arm64 · live-backend contracts run in CI via DATABASE_URL / REDIS_ADDR</footer>
+</div>
+
+<script>
+  (function(){
+    var btns=document.querySelectorAll('.filterbar button');
+    var rows=document.querySelectorAll('#testTable tbody tr');
+    btns.forEach(function(b){b.addEventListener('click',function(){
+      btns.forEach(function(x){x.setAttribute('aria-pressed','false')});
+      b.setAttribute('aria-pressed','true');
+      var f=b.getAttribute('data-f');
+      rows.forEach(function(r){r.style.display=(f==='all'||r.getAttribute('data-l')===f)?'':'none';});
+    });});
+    var bars=document.querySelectorAll('.cov-fill[data-w]');
+    function paint(){bars.forEach(function(el){el.style.width=el.getAttribute('data-w')+'%';});}
+    if('requestAnimationFrame' in window){requestAnimationFrame(function(){requestAnimationFrame(paint);});}
+    else{paint();}
+  })();
+</script>
+</body>
+</html>

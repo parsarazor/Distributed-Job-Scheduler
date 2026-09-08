@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Verification Report — Distributed Job Scheduler</title>
+<meta name="description" content="Independent engineering assessment + line-by-line fact-check of docs/review.html" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root{
+    --paper:#E9ECF2;
+    --paper-2:#F4F6FA;
+    --card:#FFFFFF;
+    --ink:#161B26;
+    --ink-2:#3A4256;
+    --muted:#6B7488;
+    --line:#D4D9E3;
+    --line-strong:#B9C1D2;
+    --indigo:#2F4BFF;
+    --indigo-deep:#1A2EB8;
+    --true:#0E7A4E;
+    --true-bg:#DFF3E7;
+    --half:#8A5A00;
+    --half-bg:#FFF0C7;
+    --false:#B4232A;
+    --false-bg:#FBE0E1;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --disp:'Space Grotesk',system-ui,sans-serif;
+    --body:'Inter',system-ui,-apple-system,sans-serif;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--paper);
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size:34px 34px;
+    color:var(--ink);
+    font-family:var(--body);
+    font-size:15px;line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:'';position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(1100px 420px at 50% -80px, rgba(47,75,255,.10), transparent 70%);
+  }
+  a{color:var(--indigo-deep)}
+  a:focus-visible,button:focus-visible{outline:3px solid var(--indigo);outline-offset:2px;border-radius:6px}
+  .shell{max-width:1180px;margin:0 auto;padding:28px 22px 80px;display:grid;grid-template-columns:250px 1fr;gap:26px;position:relative}
+  /* side index */
+  .index{position:sticky;top:22px;align-self:start;background:var(--ink);color:#E8EBF3;border-radius:16px;padding:20px 16px;box-shadow:0 18px 50px rgba(22,27,38,.28)}
+  .index .kicker{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#9AA3BB;margin-bottom:10px}
+  .index h1{font-family:var(--disp);font-size:19px;line-height:1.25;font-weight:700;margin-bottom:6px}
+  .index p{font-size:12.5px;color:#9AA3BB;line-height:1.55;margin-bottom:14px}
+  .index nav{display:flex;flex-direction:column;gap:2px}
+  .index nav a{color:#C7CEE0;text-decoration:none;font-size:13px;padding:8px 10px;border-radius:9px;display:flex;gap:9px;align-items:center}
+  .index nav a:hover{background:rgba(255,255,255,.08);color:#fff}
+  .index nav a span.n{font-family:var(--mono);font-size:11px;color:#8B94AC;border:1px solid rgba(255,255,255,.18);border-radius:6px;padding:1px 6px}
+  .meta-card{margin-top:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:11px;padding:12px;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:#C7CEE0}
+  .meta-card b{color:#fff}
+  /* main */
+  .doc{background:var(--paper-2);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;box-shadow:0 18px 60px rgba(22,27,38,.12)}
+  .doc-top{padding:38px 40px 28px;border-bottom:2px solid var(--ink);position:relative;background:linear-gradient(180deg,#fff, var(--paper-2))}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--indigo-deep);margin-bottom:12px}
+  .eyebrow i{font-style:normal;border:1px solid var(--indigo);border-radius:999px;padding:2px 9px;margin-right:8px}
+  h2.title{font-family:var(--disp);font-size:clamp(28px,4vw,44px);line-height:1.04;letter-spacing:-.02em;margin-bottom:14px}
+  h2.title em{font-style:normal;background:var(--ink);color:#fff;padding:0 10px;border-radius:8px;white-space:nowrap}
+  .lede{max-width:62ch;color:var(--ink-2);font-size:15.5px}
+  .lede code,.mono{font-family:var(--mono);font-size:.88em;background:#fff;border:1px solid var(--line);border-radius:6px;padding:1px 6px;white-space:nowrap}
+  /* ledger strip — signature element: dispatch tape */
+  .tape{margin:22px 0 0;border:1.5px solid var(--ink);border-radius:12px;overflow:hidden;background:#fff}
+  .tape-head{display:flex;justify-content:space-between;align-items:center;background:var(--ink);color:#fff;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:9px 14px}
+  .tape-head .lights{display:flex;gap:6px}
+  .tape-head .lights i{width:9px;height:9px;border-radius:50%;background:#5A6378;display:block}
+  .tape-head .lights i:first-child{background:#4ADE80}
+  .tape-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr}
+  .tape-row>div{padding:13px 16px;border-right:1px solid var(--line)}
+  .tape-row>div:last-child{border-right:0}
+  .tape-row .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+  .tape-row .v{font-family:var(--disp);font-weight:700;font-size:19px}
+  .tape-row .s{font-size:12px;color:var(--muted)}
+  /* sections */
+  .body{padding:10px 40px 40px}
+  section{padding:30px 0 8px;scroll-margin-top:18px}
+  .sec-label{display:flex;align-items:center;gap:12px;margin:14px 0 16px}
+  .sec-label .act{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;background:var(--ink);color:#fff;border-radius:999px;padding:4px 12px}
+  .sec-label h3{font-family:var(--disp);font-size:22px;letter-spacing:-.01em}
+  .sec-label .rule{flex:1;height:2px;background:var(--ink);opacity:.9;border-radius:2px}
+  .prose{color:var(--ink-2);max-width:72ch}
+  .prose strong{color:var(--ink)}
+  .grade-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0 8px}
+  .grade{background:var(--card);border:1px solid var(--line-strong);border-radius:12px;padding:14px 15px}
+  .grade .gk{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+  .grade .gv{font-family:var(--disp);font-weight:700;font-size:20px;margin-bottom:4px}
+  .grade p{font-size:12.8px;color:var(--ink-2)}
+  /* verdict stamps */
+  .finding{background:var(--card);border:1px solid var(--line-strong);border-radius:13px;margin-bottom:13px;overflow:hidden}
+  .finding-top{display:flex;gap:14px;align-items:flex-start;padding:16px 18px 13px}
+  .stamp{flex-shrink:0;font-family:var(--mono);font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;border:1.5px solid;border-radius:8px;padding:5px 10px;transform:rotate(-2deg)}
+  .stamp.true{color:var(--true);border-color:var(--true);background:var(--true-bg)}
+  .stamp.half{color:var(--half);border-color:var(--half);background:var(--half-bg)}
+  .stamp.false{color:var(--false);border-color:var(--false);background:var(--false-bg)}
+  .finding-top h4{font-size:14.5px;line-height:1.4;margin-bottom:3px}
+  .finding-top .ref{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .finding-body{padding:0 18px 16px 66px;color:var(--ink-2);font-size:13.8px}
+  .finding-body p+p{margin-top:9px}
+  .finding-body pre{background:var(--ink);color:#DCE2F0;border-radius:9px;padding:13px 15px;overflow-x:auto;font-family:var(--mono);font-size:12.3px;line-height:1.6;margin-top:10px}
+  .finding-body pre .bad{color:#FF9B9B}.finding-body pre .good{color:#7DE8A8}.finding-body pre .cmt{color:#8B94AC}
+  .filterbar{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
+  .filterbar button{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);background:#fff;border-radius:999px;padding:7px 14px;cursor:pointer}
+  .filterbar button[aria-pressed="true"]{background:var(--ink);color:#fff}
+  .dag{background:var(--ink);border-radius:13px;padding:18px;color:#DCE2F0;margin:14px 0}
+  .dag .dk{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#9AA3BB;margin-bottom:12px}
+  .dag svg{width:100%;height:auto;display:block}
+  details.ev{margin-top:10px;border:1px dashed var(--line-strong);border-radius:9px;background:var(--paper-2)}
+  details.ev summary{cursor:pointer;font-family:var(--mono);font-size:12.5px;padding:10px 13px;color:var(--indigo-deep)}
+  details.ev .in{padding:0 13px 12px;font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+  .repro{background:#fff;border:1.5px solid var(--ink);border-radius:12px;padding:16px 18px;margin-top:14px}
+  .repro h5{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px}
+  .repro pre{background:var(--ink);color:#DCE2F0;border-radius:9px;padding:13px 15px;font-family:var(--mono);font-size:12.3px;overflow-x:auto;line-height:1.65}
+  footer.doc-foot{padding:22px 40px 30px;border-top:2px solid var(--ink);font-family:var(--mono);font-size:12px;color:var(--muted);background:#fff}
+  @media (max-width:960px){
+    .shell{grid-template-columns:1fr}
+    .index{position:static}
+    .doc-top,.body,footer.doc-foot{padding-left:20px;padding-right:20px}
+    .tape-row{grid-template-columns:1fr 1fr}
+    .tape-row>div:nth-child(2){border-right:0}
+    .tape-row>div{border-bottom:1px solid var(--line)}
+    .grade-grid{grid-template-columns:1fr}
+    .finding-body{padding-left:18px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="index" aria-label="Report index">
+    <div class="kicker">Evidence ledger · Verified</div>
+    <h1>Distributed Job Scheduler — Verification Report</h1>
+    <p>Engineering assessment + line-by-line fact-check of <span style="font-family:var(--mono)">docs/review.html</span>. Every verdict links to the file and line that proves it.</p>
+    <nav>
+      <a href="#act1"><span class="n">I</span> How engineered is this?</a>
+      <a href="#act2"><span class="n">II</span> Fact-check: strengths</a>
+      <a href="#crit"><span class="n">III</span> Fact-check: criticals</a>
+      <a href="#warn"><span class="n">IV</span> Fact-check: warnings</a>
+      <a href="#missing"><span class="n">V</span> Missing pieces + scorecard</a>
+      <a href="#repro"><span class="n">§</span> How I verified</a>
+    </nav>
+    <div class="meta-card">
+      <b>Scope:</b> internal/domain, internal/repository, proto/v1, migrations, docs/adr<br>
+      <b>Toolchain:</b> go1.26.5 darwin/arm64<br>
+      <b>Result:</b> build ✓ · vet ✓ · tests PASS<br>
+      <b>Authorship:</b> review.html names no author — “Bob from IBM” unverifiable from the file
+    </div>
+  </aside>
+
+  <article class="doc">
+    <div class="doc-top">
+      <div class="eyebrow"><i>Two questions</i> Is it well engineered? Is the review true?</div>
+      <h2 class="title">Good bones. <em>No building yet.</em></h2>
+      <p class="lede">This is a strong week-one skeleton — a correct domain core, thoughtful contracts, and a good schema — with <strong>zero runnable infrastructure</strong>. Bob’s review gets the direction right but stamps three design intentions as implemented code and gets the priority math wrong. Details below, each tied to <code>file:line</code>.</p>
+
+      <div class="tape" role="img" aria-label="Dispatch tape summary">
+        <div class="tape-head"><span>dispatch tape · live repo state</span><span class="lights"><i></i><i></i><i></i></span></div>
+        <div class="tape-row">
+          <div><div class="k">Runnable service</div><div class="v">0%</div><div class="s">no cmd/, no impls, 1 dep (uuid)</div></div>
+          <div><div class="k">Domain statements covered</div><div class="v">80.8%</div><div class="s">measured, not ~20%</div></div>
+          <div><div class="k">Review claims true</div><div class="v">≈ 11 / 14</div><div class="s">3 need correction, 1 math error</div></div>
+          <div><div class="k">Build · Vet · Test</div><div class="v">✓ ✓ ✓</div><div class="s">reproduced 2026-09-05</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+    <!-- ACT 1 -->
+    <section id="act1">
+      <div class="sec-label"><span class="act">Act I</span><h3>How efficient &amp; engineered is this?</h3><span class="rule"></span></div>
+      <p class="prose">Total ≈ 957 lines across Go, proto, SQL, ADRs. Go itself ≈ 385 lines. What runs is clean; what matters most <strong>doesn’t exist yet</strong>, so runtime efficiency (throughput, contention, pool sizing) is unmeasurable. Design efficiency — the part you can judge on paper — is good where it exists.</p>
+
+      <div class="grade-grid">
+        <div class="grade"><div class="gk">Domain layer</div><div class="gv">A−</div><p>State table, sentinel errors, jittered backoff. Small, pure, fast (O(1) transitions, O(1) backoff).</p></div>
+        <div class="grade"><div class="gk">Contracts + schema intent</div><div class="gv">B+</div><p>Interfaces, fencing-token + SKIP LOCKED comments, and the four dispatcher indexes are the right instincts — but comments, not code.</p></div>
+        <div class="grade"><div class="gk">Complete system</div><div class="gv">Incomplete</div><p>No repos, no services, no dispatcher, no lease client, no auth hashing, no observability, no integration tests.</p></div>
+      </div>
+
+      <div class="dag" aria-label="State machine diagram">
+        <div class="dk">Exhibit A · the part that actually works — job.go state machine</div>
+        <svg viewBox="0 0 720 150" role="img" aria-label="pending to running to succeeded or failed, failed retries to pending or dead, pending cancellable">
+          <g font-family="JetBrains Mono, monospace" font-size="12">
+            <rect x="8" y="55" width="100" height="38" rx="9" fill="none" stroke="#7DE8A8" stroke-width="1.6"/><text x="58" y="79" text-anchor="middle" fill="#fff">pending</text>
+            <rect x="170" y="55" width="100" height="38" rx="9" fill="none" stroke="#7DA2FF" stroke-width="1.6"/><text x="220" y="79" text-anchor="middle" fill="#fff">running</text>
+            <rect x="332" y="20" width="110" height="38" rx="9" fill="none" stroke="#7DE8A8" stroke-width="1.6"/><text x="387" y="44" text-anchor="middle" fill="#fff">succeeded</text>
+            <rect x="332" y="92" width="110" height="38" rx="9" fill="none" stroke="#FFC46B" stroke-width="1.6"/><text x="387" y="116" text-anchor="middle" fill="#fff">failed</text>
+            <rect x="504" y="20" width="95" height="38" rx="9" fill="none" stroke="#8B94AC" stroke-width="1.6"/><text x="551" y="44" text-anchor="middle" fill="#C7CEE0">dead</text>
+            <rect x="504" y="92" width="95" height="38" rx="9" fill="none" stroke="#8B94AC" stroke-width="1.6"/><text x="551" y="116" text-anchor="middle" fill="#C7CEE0">cancelled</text>
+            <g stroke="#5A6378" stroke-width="1.4" fill="none" marker-end="url(#ah)">
+              <path d="M108 74 H165"/><path d="M270 65 C300 55 305 40 330 38"/><path d="M270 83 C300 92 305 105 330 108"/>
+              <path d="M442 100 C475 95 475 78 502 74"/><path d="M442 32 C470 30 478 30 502 32"/>
+              <path d="M108 60 C130 30 150 28 165 45"/><path d="M442 108 C470 125 480 130 505 118"/>
+            </g>
+            <g fill="#8B94AC" font-size="10.5"><text x="118" y="66">run</text><text x="288" y="52">ok</text><text x="286" y="106">fail</text><text x="452" y="92">retry</text><text x="452" y="26">exhaust</text><text x="112" y="36">cancel</text></g>
+          </g>
+          <defs><marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L6,3.5 L0,7" fill="none" stroke="#5A6378" stroke-width="1.4"/></marker></defs>
+        </svg>
+      </div>
+
+      <p class="prose"><strong>What’s efficient:</strong> <code>ValidateTransition()</code> is a tiny map lookup; <code>NextDelay()</code> is arithmetic + one RNG call; the schema’s <code>idx_jobs_ready</code>, <code>idx_jobs_retry</code>, and <code>idx_job_outbox_unpublished</code> partial indexes (<code>migrations/000001_init_schema.up.sql:38-41,69</code>) are exactly what a dispatcher needs. <strong>What isn’t proven:</strong> anything involving Postgres, Redis, or RabbitMQ — no implementation, no benchmarks, no contention behavior.</p>
+      <details class="ev"><summary>Evidence · file inventory + toolchain output</summary><div class="in">internal/domain (8 files) · internal/repository (5 interfaces, 0 impls) · proto/v1 (3 files) · migrations (up/down) · docs/adr/ADR.md — MISSING: cmd/, pkg/api/v1, buf.yaml, buf.gen.yaml, Makefile, docker-compose.yml.<br>go build ./... → 0 · go vet ./... → 0 · go test ./... -cover → domain 80.8%, repository [no test files].</div></details>
+    </section>
+
+    <!-- ACT 2 strengths -->
+    <section id="act2">
+      <div class="sec-label"><span class="act">Act II</span><h3>Fact-check: “What works” (7 claims)</h3><span class="rule"></span></div>
+      <div class="filterbar" role="group" aria-label="Filter findings by verdict">
+        <button data-f="all" aria-pressed="true">All</button>
+        <button data-f="true" aria-pressed="false">True</button>
+        <button data-f="half" aria-pressed="false">Partial</button>
+        <button data-f="false" aria-pressed="false">False</button>
+      </div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>Explicit state machine with transition table</h4><div class="ref">internal/domain/job.go:35-67 · job_test.go:8-68</div></div></div><div class="finding-body"><p>Correct pattern, no scattered conditionals, and the valid + invalid transition tests genuinely pass (reproduced). Keep as-is.</p></div></div>
+
+      <div class="finding" data-v="half"><div class="finding-top"><span class="stamp half">Half-true</span><div><h4>Outbox + FOR UPDATE SKIP LOCKED “is exactly right”</h4><div class="ref">internal/repository/outbox_repository.go:16-18 · ADR 007/008</div></div></div><div class="finding-body"><p>Advice is sound, but the SQL exists <strong>only as a doc comment and ADR prose</strong>. There is no dispatcher and no query to verify. Should read “good design intent, not yet implemented.”</p></div></div>
+
+      <div class="finding" data-v="half"><div class="finding-top"><span class="stamp half">Half-true</span><div><h4>Fencing token WHERE clause “present in the contract”</h4><div class="ref">internal/repository/job_repository.go:38-45</div></div></div><div class="finding-body"><p>Only present as comments on <code>TransitionStatus</code> / <code>UpdateWithFencingToken</code>. No <code>UPDATE … WHERE fencing_token</code> exists in the repo. Same comment-vs-code conflation as above.</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>BackoffStrategy with Full Jitter, testable via ConstantBackoff</h4><div class="ref">internal/domain/backoff.go:9-17,56-64 · backoff_test.go:8-48</div></div></div><div class="finding-body"><p>Decoupled interface, AWS-paper formula <code>rand(0, min(max, base·2^(n-1)))</code>, bounds tests pass. Minor: uses global <code>math/rand</code>; fine for jitter, not for crypto.</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>Repository + Transactor are pure interfaces</h4><div class="ref">internal/repository/*.go (5 files)</div></div></div><div class="finding-body"><p>All interfaces, zero imports of pgx/redis/amqp. Service logic will be mock-testable. Correct.</p></div></div>
+
+      <div class="finding" data-v="false"><div class="finding-top"><span class="stamp false">False as stated</span><div><h4>“Cascading abort automatically cancels dependents”</h4><div class="ref">docs/adr/ADR.md:69-72 (ADR 010) · job_repository.go:55</div></div></div><div class="finding-body"><p>ADR 010 <em>designs</em> it and <code>GetDependentJobs()</code> anticipates it — but <strong>nothing executes it</strong>. No service, no cascade code. “Automatically” is false today; relabel as “designed, not built.”</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>api_key_hash excluded from JSON</h4><div class="ref">internal/domain/tenant.go:13</div></div></div><div class="finding-body"><p><code>APIKeyHash string `json:"-"`</code> verbatim. Leak-prevention claim holds.</p></div></div>
+    </section>
+
+    <!-- Criticals -->
+    <section id="crit">
+      <div class="sec-label"><span class="act">Act III</span><h3>Fact-check: critical issues (3 claims)</h3><span class="rule"></span></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>C1 · Zero infrastructure implementations — service cannot run</h4><div class="ref">go.mod:5 · internal/repository/* · project root (no cmd/, no pkg/)</div></div></div><div class="finding-body"><p><code>go.mod</code> has exactly one require (<code>uuid v1.6.0</code>); <code>go list -m all</code> confirms no pgx/redis/amqp/grpc. No struct satisfies any repository interface. Suggested dep list is reasonable.</p></div></div>
+
+      <div class="finding" data-v="false"><div class="finding-top"><span class="stamp false">Values true · conclusion false</span><div><h4>C2 · Proto priority ordinals ≠ domain weights</h4><div class="ref">internal/domain/job.go:27-30 (0,2,5,10) vs proto/v1/job.proto:21-27 (1,2,3,4)</div></div></div><div class="finding-body">
+        <p>The enum values are quoted correctly. The failure mechanism is not: the review says a naively-cast <code>HIGH (3)</code> and <code>CRITICAL (4)</code> would sort <strong>below</strong> default <code>(2)</code>. But <strong>3 &gt; 2 and 4 &gt; 2</strong> — order is preserved, only spacing is compressed (10→4, 5→3).</p>
+        <pre><span class="cmt">-- naive cast (hypothetical, no handler exists yet)</span>
+<span class="bad">LOW 1 instead of 0  → slightly hotter than intended</span>
+<span class="good">DEFAULT 2 = 2       → coincidental match (review is right here)</span>
+<span class="bad">HIGH 3 instead of 5 · CRITICAL 4 instead of 10 → compressed, still above 2</span></pre>
+        <p>Keep the recommended explicit <code>protoToDomainPriority()</code> mapper — the <code>UNSPECIFIED(0) ≡ PriorityLow(0)</code> collision and mixed-write drift are real — but “silent scheduling corruption / sorts below default” must be retracted. Also speculative: no handler exists to perform the naive cast.</p>
+      </div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>C3 · Proto files have no build pipeline</h4><div class="ref">proto/v1/* · project root (no buf.yaml, buf.gen.yaml, Makefile, pkg/api/v1)</div></div></div><div class="finding-body"><p>Confirmed absent. <code>go_package …/pkg/api/v1</code> points at a directory that doesn’t exist, so any gRPC import fails today. The <code>buf.yaml</code>/<code>buf.gen.yaml</code> fix is valid.</p></div></div>
+    </section>
+
+    <!-- Warnings -->
+    <section id="warn">
+      <div class="sec-label"><span class="act">Act IV</span><h3>Fact-check: warnings (4 claims) — all true</h3><span class="rule"></span></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>W1 · TransitionTo() doesn’t update UpdatedAt</h4><div class="ref">internal/domain/job.go:99-104 · migrations/up.sql:72-83</div></div></div><div class="finding-body"><p>Only <code>j.Status = next</code>; trigger fixes the row, not the in-memory object returned to callers. Proposed <code>j.UpdatedAt = time.Now().UTC()</code> is valid (<code>time</code> already imported).</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>W2 · Outbox RetryCount has no ceiling</h4><div class="ref">internal/domain/outbox.go:18 · outbox_repository.go:24</div></div></div><div class="finding-body"><p>No <code>MaxOutboxRetries</code>, no dead-letter/abandoned path. A poisoned row would be re-fetched every tick. Suggested cap + skip/abandon rule is the right fix.</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>W3 · No Tenant constructor — plaintext key footgun</h4><div class="ref">internal/domain/tenant.go:10-15 · tenant_repository.go:18-20 · up.sql:8</div></div></div><div class="finding-body"><p>Bare struct accepts any string; <code>VARCHAR(64)</code> + “SHA-256” comment imply hex-encoded hash with zero enforcement. Proposed <code>NewTenant(name, rawKey)</code> with <code>sha256 + hex</code> is correct.</p></div></div>
+
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True</span><div><h4>W4 · Single-parent DependsOn, no cycle detection, no fan-in</h4><div class="ref">internal/domain/job.go:79 · up.sql:24</div></div></div><div class="finding-body"><p><code>*uuid.UUID</code> + single FK column confirmed; no cycle check anywhere. A↔B mutual dependency deadlocks (both stay pending, <code>GetReadyJobs</code> blocks both). Ancestor-walk rejection at submit time is the right minimum fix.</p></div></div>
+    </section>
+
+    <!-- Missing + scorecard -->
+    <section id="missing">
+      <div class="sec-label"><span class="act">Act V</span><h3>Missing pieces + scorecard</h3><span class="rule"></span></div>
+      <div class="finding" data-v="true"><div class="finding-top"><span class="stamp true">True × 4</span><div><h4>No cmd/, no compose, no Makefile, no integration tests</h4><div class="ref">project root · internal/repository (no test files)</div></div></div><div class="finding-body"><p>All four confirmed absent. The <code>testcontainers-go</code> / compose-with-auto-migrate advice is sound. Roadmap ordering (fix <code>TransitionTo</code> + <code>NewTenant</code> → buf-gen → Postgres repos → mapper + dispatcher → cmd/compose/Makefile → e2e) is sensible.</p></div></div>
+
+      <div class="finding" data-v="half"><div class="finding-top"><span class="stamp half">Misleading</span><div><h4>Scorecard “~20% test coverage” understates the domain</h4><div class="ref">go test ./... -cover → domain 80.8%</div></div></div><div class="finding-body"><p>Measured statement coverage of the existing <code>domain</code> package is <strong>80.8%</strong>; <code>repository</code> has no statements (interfaces only). “System ≈20% built, infra 0% tested” would be accurate — “~20% coverage” without methodology is not. Counts of 3 criticals / 4 warnings check out; “Domain: A” is subjective but defensible.</p></div></div>
+
+      <div class="finding" data-v="half"><div class="finding-top"><span class="stamp half">Self-contradicting</span><div><h4>“Every claim verified against running code”</h4><div class="ref">review.html hero vs its own C1</div></div></div><div class="finding-body"><p>Build/vet/test verification is real and I reproduced it. But the service <em>cannot run</em> (the review’s own C1), and C2 analyzes a handler that doesn’t exist. “Verified against source + toolchain” is true; “running code” is not.</p></div></div>
+    </section>
+
+    <section id="repro">
+      <div class="sec-label"><span class="act">§</span><h3>How I verified + what to do next</h3><span class="rule"></span></div>
+      <div class="repro">
+        <h5>Reproduce in 30 seconds</h5>
+        <pre>go build ./...  <span class="cmt"># exit 0</span>
+go vet ./...    <span class="cmt"># exit 0</span>
+go test ./... -v -count=1 -cover
+go list -m all  <span class="cmt"># only uuid v1.6.0</span></pre>
+      </div>
+      <p class="prose" style="margin-top:14px"><strong>Next, in order:</strong> 1) add <code>j.UpdatedAt</code> + <code>NewTenant()</code> (<code>&lt;10</code> lines each) → 2) <code>buf.yaml</code> + generate <code>pkg/api/v1</code> → 3) Postgres repos under <code>internal/postgres/</code> with testcontainers tests (fencing + <code>SKIP LOCKED</code> first) → 4) gRPC handlers <em>with</em> the priority mapper → 5) <code>cmd/</code> + compose + Makefile → 6) submit→dispatch→heartbeat→complete e2e. Bob’s roadmap gets this order right.</p>
+      <p class="prose" style="margin-top:10px"><strong>Overall:</strong> engineering direction <strong>good</strong>, implementation <strong>incomplete</strong>; review accuracy <strong>≈ 80%</strong> — trust the warnings and missing-pieces list fully, mentally downgrade the three “verified implementation” strengths to “verified intent,” and strike the C2 inversion sentence.</p>
+    </section>
+    </div>
+
+    <footer class="doc-foot">Independent verification · source-read + toolchain-reproduced · go1.26.5 darwin/arm64 · build ✓ vet ✓ tests PASS · review.html authorship (“Bob / IBM”) not present in the file and unverified</footer>
+  </article>
+</div>
+
+<script>
+  (function(){
+    var btns = document.querySelectorAll('.filterbar button');
+    var cards = document.querySelectorAll('.finding');
+    btns.forEach(function(b){
+      b.addEventListener('click', function(){
+        btns.forEach(function(x){x.setAttribute('aria-pressed','false')});
+        b.setAttribute('aria-pressed','true');
+        var f = b.getAttribute('data-f');
+        cards.forEach(function(c){
+          c.style.display = (f === 'all' || c.getAttribute('data-v') === f) ? '' : 'none';
+        });
+      });
+    });
+  })();
+</script>
+</body>
+</html>

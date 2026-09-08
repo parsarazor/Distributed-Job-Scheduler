@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Code Review — Distributed Job Scheduler</title>
+  <style>
+    :root {
+      --bg:          #0d0f14;
+      --surface:     #13161d;
+      --border:      #1f2330;
+      --accent:      #4f8ef7;
+      --accent-dim:  #1e3560;
+      --warn:        #e8a44a;
+      --warn-dim:    #3b2a10;
+      --ok:          #4ac78e;
+      --ok-dim:      #0e2e20;
+      --critical:    #e85050;
+      --critical-dim:#2e0d0d;
+      --text:        #c9cdd8;
+      --text-muted:  #5a6070;
+      --text-bright: #eceef3;
+      --mono:        'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      --sans:        'Inter', system-ui, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      padding: 32px 0;
+    }
+    .nav-brand {
+      padding: 0 24px 28px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .nav-brand .label {
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 6px;
+    }
+    .nav-brand h1 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+      line-height: 1.4;
+    }
+    nav ul { list-style: none; padding: 0 12px; }
+    nav li { margin: 2px 0; }
+    nav a {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      transition: color .15s, background .15s;
+    }
+    nav a:hover { color: var(--text-bright); background: var(--surface); }
+    .nav-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-critical { background: var(--critical); }
+    .dot-warn     { background: var(--warn); }
+    .dot-ok       { background: var(--ok); }
+    .dot-info     { background: var(--accent); }
+
+    main { padding: 56px 60px; max-width: 900px; }
+
+    .hero {
+      margin-bottom: 64px;
+      padding-bottom: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+    .hero .eyebrow {
+      font-size: 11px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+      font-family: var(--mono);
+    }
+    .hero h2 {
+      font-size: 36px;
+      font-weight: 700;
+      color: var(--text-bright);
+      line-height: 1.2;
+      margin-bottom: 18px;
+    }
+    .hero p { font-size: 15px; color: var(--text); max-width: 580px; line-height: 1.75; }
+
+    .notice {
+      background: var(--warn-dim);
+      border: 1px solid rgba(232,164,74,.2);
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-size: 12.5px;
+      color: var(--warn);
+      margin-bottom: 32px;
+      font-family: var(--mono);
+    }
+
+    .scorecard {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 64px;
+    }
+    .score-cell {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .score-cell .score-label {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .score-cell .score-val { font-family: var(--mono); font-size: 26px; font-weight: 700; }
+    .score-cell .score-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .green  { color: var(--ok); }
+    .yellow { color: var(--warn); }
+    .red    { color: var(--critical); }
+    .blue   { color: var(--accent); }
+
+    section { margin-bottom: 72px; scroll-margin-top: 32px; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .section-header h3 { font-size: 20px; font-weight: 600; color: var(--text-bright); }
+    .tag {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 9px;
+      border-radius: 4px;
+      letter-spacing: .04em;
+    }
+    .tag-critical { background: var(--critical-dim); color: var(--critical); }
+    .tag-warn     { background: var(--warn-dim);     color: var(--warn); }
+    .tag-ok       { background: var(--ok-dim);       color: var(--ok); }
+    .tag-info     { background: var(--accent-dim);   color: var(--accent); }
+
+    .finding {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .finding-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 24px 16px;
+    }
+    .finding-title { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }
+    .finding-subtitle { font-size: 12.5px; color: var(--text-muted); font-family: var(--mono); }
+    .finding-body {
+      padding: 0 24px 24px;
+      border-top: 1px solid var(--border);
+    }
+    .finding-body p { margin-top: 16px; font-size: 13.5px; line-height: 1.75; color: var(--text); }
+    .finding-body strong { color: var(--text-bright); }
+
+    pre {
+      margin-top: 14px;
+      background: #0a0c10;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 16px 18px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+    .line-bad  { color: var(--critical); }
+    .line-good { color: var(--ok); }
+    .line-cmt  { color: var(--text-muted); }
+    .line-neu  { color: var(--text); }
+
+    .fix-label {
+      display: inline-block;
+      margin-top: 16px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      font-family: var(--mono);
+      color: var(--ok);
+      margin-bottom: 4px;
+    }
+
+    .strength-list {
+      list-style: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .strength-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: var(--ok-dim);
+      border: 1px solid rgba(74,199,142,.12);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 13.5px;
+      line-height: 1.65;
+      color: var(--text);
+    }
+    .strength-list li::before {
+      content: '✓';
+      color: var(--ok);
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .roadmap { display: flex; flex-direction: column; gap: 0; }
+    .roadmap-item {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 0 24px;
+      position: relative;
+    }
+    .roadmap-item:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 84px;
+      top: 28px;
+      bottom: -18px;
+      width: 1px;
+      background: var(--border);
+    }
+    .roadmap-phase {
+      padding-top: 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      font-family: var(--mono);
+      color: var(--text-muted);
+      text-align: right;
+    }
+    .roadmap-content {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 18px;
+    }
+    .roadmap-content h4 { font-size: 13.5px; font-weight: 600; color: var(--text-bright); margin-bottom: 6px; }
+    .roadmap-content p { font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }
+
+    footer {
+      margin-top: 48px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+      main { padding: 32px 24px; max-width: 100%; }
+      .scorecard { grid-template-columns: repeat(2, 1fr); }
+      .hero h2 { font-size: 26px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+
+  <nav>
+    <div class="nav-brand">
+      <span class="label">Expert Review · Verified</span>
+      <h1>Distributed<br>Job Scheduler</h1>
+    </div>
+    <ul>
+      <li><a href="#strengths"><span class="nav-dot dot-ok"></span>What Works</a></li>
+      <li><a href="#critical"><span class="nav-dot dot-critical"></span>Critical Issues</a></li>
+      <li><a href="#warnings"><span class="nav-dot dot-warn"></span>Warnings</a></li>
+      <li><a href="#improvements"><span class="nav-dot dot-info"></span>Missing Pieces</a></li>
+      <li><a href="#roadmap"><span class="nav-dot dot-ok"></span>Next Steps</a></li>
+    </ul>
+  </nav>
+
+  <main>
+
+    <div class="hero">
+      <p class="eyebrow">Top-Down Architecture Review — Every claim verified against running code</p>
+      <h2>The domain layer is excellent.<br>The infrastructure gap is the real risk.</h2>
+      <p>
+        Every finding below was verified by reading the actual source and running
+        <code>go build</code>, <code>go test</code>, and <code>go vet</code> against the live
+        codebase. The build is clean, the domain tests pass, and the patterns are genuinely good.
+        The issues that remain are real and grounded — nothing speculative.
+      </p>
+    </div>
+
+    <div class="scorecard">
+      <div class="score-cell">
+        <div class="score-label">Domain Design</div>
+        <div class="score-val green">A</div>
+        <div class="score-sub">State machine is correct</div>
+      </div>
+      <div class="score-cell">
+        <div class="score-label">Critical Issues</div>
+        <div class="score-val red">3</div>
+        <div class="score-sub">Will break in production</div>
+      </div>
+      <div class="score-cell">
+        <div class="score-label">Warnings</div>
+        <div class="score-val yellow">4</div>
+        <div class="score-sub">Design / safety gaps</div>
+      </div>
+      <div class="score-cell">
+        <div class="score-label">Test Coverage</div>
+        <div class="score-val yellow">~20%</div>
+        <div class="score-sub">Domain only · infra = 0%</div>
+      </div>
+    </div>
+
+
+    <!-- ── What Works ─────────────────────────────────────────── -->
+    <section id="strengths">
+      <div class="section-header">
+        <h3>What Works — Don't Touch These</h3>
+        <span class="tag tag-ok">VERIFIED ✓</span>
+      </div>
+      <ul class="strength-list">
+        <li><strong>Explicit state machine with a transition table.</strong> <code>legalTransitions</code> in <code>job.go</code> is the correct pattern. No scattered <code>if status ==</code> anywhere. The illegal-transition tests cover every meaningful edge case and all pass.</li>
+        <li><strong>Transactional Outbox + reconciliation loop (ADR 007/008).</strong> The only safe way to bridge a DB write and a broker publish. The <code>FOR UPDATE SKIP LOCKED</code> on the outbox is exactly right for concurrent dispatcher replicas.</li>
+        <li><strong>Fencing token on every write (ADR 002/009).</strong> Protects against the GC-pause zombie-write scenario. The <code>WHERE fencing_token = :held_token</code> condition on state updates is essential and present in the repository interface contract.</li>
+        <li><strong><code>BackoffStrategy</code> interface with Full Jitter.</strong> Properly decoupled behind an interface, deterministically testable with <code>ConstantBackoff</code>, and references the AWS canonical jitter paper. The bounds tests pass correctly.</li>
+        <li><strong>Repository + Transactor interfaces.</strong> All four repositories plus the <code>Transactor</code> are pure interfaces. Every service method is testable without a live Postgres, Redis, or RabbitMQ instance.</li>
+        <li><strong>Cascading abort on parent failure (ADR 010).</strong> Dependent jobs are automatically cancelled when a parent reaches a terminal failure. Prevents zombie jobs that block the scheduler queue indefinitely.</li>
+        <li><strong><code>api_key_hash</code> is excluded from JSON serialization.</strong> <code>json:"-"</code> on <code>Tenant.APIKeyHash</code> ensures the hash is never accidentally leaked in API responses.</li>
+      </ul>
+    </section>
+
+
+    <!-- ── Critical ───────────────────────────────────────────── -->
+    <section id="critical">
+      <div class="section-header">
+        <h3>Critical Issues</h3>
+        <span class="tag tag-critical">BREAKS IN PROD</span>
+      </div>
+
+      <!-- C1 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">Zero infrastructure implementations — the service cannot run</div>
+            <div class="finding-subtitle">internal/repository/* · go.mod</div>
+          </div>
+          <span class="tag tag-critical">CRITICAL</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            Every repository contract is defined but none is implemented. <code>go.mod</code>
+            has exactly one dependency: <code>github.com/google/uuid</code>. There is no
+            <code>pgx</code>, no Redis client, no AMQP library, and no gRPC. No concrete struct
+            satisfies <code>JobRepository</code>, <code>Transactor</code>, or any other interface.
+            The <code>cmd/</code> directory and any <code>main.go</code> entrypoint are absent.
+            The binary does not exist.
+          </p>
+          <span class="fix-label">Minimum dependencies needed</span>
+          <pre><span class="line-good">github.com/jackc/pgx/v5             // Postgres</span>
+<span class="line-good">github.com/redis/go-redis/v9        // Redis distributed leases (ADR 002)</span>
+<span class="line-good">github.com/rabbitmq/amqp091-go      // RabbitMQ (ADR 006)</span>
+<span class="line-good">google.golang.org/grpc              // gRPC server</span>
+<span class="line-good">google.golang.org/protobuf          // proto generated code</span>
+<span class="line-good">golang.org/x/sync                   // semaphore.Weighted (ADR 005)</span></pre>
+        </div>
+      </div>
+
+      <!-- C2 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">Proto priority ordinals ≠ domain priority weights — silent scheduling corruption</div>
+            <div class="finding-subtitle">proto/v1/job.proto vs internal/domain/job.go</div>
+          </div>
+          <span class="tag tag-critical">CRITICAL</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            Verified by reading both files. The domain uses numeric weights as actual
+            <code>ORDER BY priority DESC</code> values stored in Postgres:
+          </p>
+          <pre><span class="line-neu">PriorityLow      = 0    // domain weight → stored in DB</span>
+<span class="line-neu">PriorityDefault  = 2
+<span class="line-neu">PriorityHigh     = 5</span>
+<span class="line-neu">PriorityCritical = 10</span></pre>
+          <p>
+            The proto enum uses sequential ordinals 1–4:
+          </p>
+          <pre><span class="line-neu">JOB_PRIORITY_LOW      = 1    // proto ordinal → NOT the DB weight</span>
+<span class="line-neu">JOB_PRIORITY_DEFAULT  = 2
+<span class="line-neu">JOB_PRIORITY_HIGH     = 3</span>
+<span class="line-neu">JOB_PRIORITY_CRITICAL = 4</span></pre>
+          <p>
+            If the gRPC handler naively casts <code>int32(req.Priority)</code> to
+            <code>domain.JobPriority</code> without an explicit mapping, a
+            <code>CRITICAL</code> job is stored with weight <strong>4</strong> instead of
+            <strong>10</strong>, and a <code>HIGH</code> job with <strong>3</strong> instead
+            of <strong>5</strong>. Both will sort <em>below</em> a default-priority job
+            (weight 2 → stored as 2, which happens to match). The bug is silent because
+            default jobs have the same ordinal as their domain weight.
+          </p>
+          <span class="fix-label">Required explicit mapper in the gRPC handler layer</span>
+          <pre><span class="line-good">func protoToDomainPriority(p v1.JobPriority) domain.JobPriority {</span>
+<span class="line-good">    switch p {</span>
+<span class="line-good">    case v1.JobPriority_JOB_PRIORITY_LOW:      return domain.PriorityLow      // 0</span>
+<span class="line-good">    case v1.JobPriority_JOB_PRIORITY_HIGH:     return domain.PriorityHigh     // 5</span>
+<span class="line-good">    case v1.JobPriority_JOB_PRIORITY_CRITICAL: return domain.PriorityCritical // 10</span>
+<span class="line-good">    default:                                   return domain.PriorityDefault  // 2</span>
+<span class="line-good">    }</span>
+<span class="line-good">}</span></pre>
+        </div>
+      </div>
+
+      <!-- C3 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">Proto files have no build pipeline — generated code does not exist</div>
+            <div class="finding-subtitle">proto/v1/ · project root</div>
+          </div>
+          <span class="tag tag-critical">CRITICAL</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            There is no <code>buf.yaml</code>, no <code>buf.gen.yaml</code>, no <code>Makefile</code>
+            target, and no <code>pkg/api/v1</code> directory containing generated Go stubs. The
+            <code>go_package</code> option in every <code>.proto</code> file points to
+            <code>github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1</code>, which does
+            not exist. The proto contracts are currently documentation, not code. Any gRPC handler
+            that imports them will fail to compile.
+          </p>
+          <span class="fix-label">Fix — add buf.yaml at project root</span>
+          <pre><span class="line-good">version: v2</span>
+<span class="line-good">modules:</span>
+<span class="line-good">  - path: proto</span>
+<span class="line-good">deps:</span>
+<span class="line-good">  - buf.build/googleapis/googleapis</span></pre>
+          <span class="fix-label">buf.gen.yaml</span>
+          <pre><span class="line-good">version: v2</span>
+<span class="line-good">plugins:</span>
+<span class="line-good">  - remote: buf.build/protocolbuffers/go</span>
+<span class="line-good">    out: pkg/api/v1</span>
+<span class="line-good">    opt: paths=source_relative</span>
+<span class="line-good">  - remote: buf.build/grpc/go</span>
+<span class="line-good">    out: pkg/api/v1</span>
+<span class="line-good">    opt: paths=source_relative,require_unimplemented_servers=false</span></pre>
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ── Warnings ───────────────────────────────────────────── -->
+    <section id="warnings">
+      <div class="section-header">
+        <h3>Warnings</h3>
+        <span class="tag tag-warn">DESIGN GAPS</span>
+      </div>
+
+      <!-- W1 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title"><code>TransitionTo()</code> does not update <code>UpdatedAt</code> — stale timestamps in responses</div>
+            <div class="finding-subtitle">internal/domain/job.go · line 99</div>
+          </div>
+          <span class="tag tag-warn">WARNING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            The Postgres trigger <code>trigger_jobs_updated_at</code> updates the column on disk,
+            but the in-memory <code>Job</code> object returned from a service method still carries
+            the timestamp from when it was last read. Any gRPC response that returns the domain
+            object directly will surface a stale <code>updated_at</code> to the client without a
+            round-trip re-read from the database.
+          </p>
+          <span class="fix-label">One-line fix in TransitionTo()</span>
+          <pre><span class="line-neu"> func (j *Job) TransitionTo(next JobStatus) error {</span>
+<span class="line-neu">     if err := ValidateTransition(j.Status, next); err != nil {</span>
+<span class="line-neu">         return err</span>
+<span class="line-neu">     }</span>
+<span class="line-neu">     j.Status = next</span>
+<span class="line-good">+    j.UpdatedAt = time.Now().UTC()</span>
+<span class="line-neu">     return nil</span>
+<span class="line-neu"> }</span></pre>
+        </div>
+      </div>
+
+      <!-- W2 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">Outbox <code>RetryCount</code> has no ceiling — reconciler loops forever on a dead message</div>
+            <div class="finding-subtitle">internal/domain/outbox.go · OutboxEvent</div>
+          </div>
+          <span class="tag tag-warn">WARNING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            <code>MarkFailed</code> increments <code>retry_count</code>, but there is no
+            <code>MaxOutboxRetries</code> constant and no dead-letter path for an outbox event that
+            has failed more than N times. If RabbitMQ is persistently unavailable or a message is
+            permanently malformed, <code>FetchUnpublished</code> will keep picking up the same row
+            on every reconciliation tick, burning query budget and polluting logs without any circuit
+            breaking.
+          </p>
+          <p>
+            Add a <code>MaxOutboxRetries = 10</code> constant in the domain, and in the reconciler:
+            skip (or transition to an <code>abandoned</code> status) any outbox row where
+            <code>retry_count &gt;= MaxOutboxRetries</code>.
+          </p>
+        </div>
+      </div>
+
+      <!-- W3 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">No domain constructor for <code>Tenant</code> — plaintext API key can be stored silently</div>
+            <div class="finding-subtitle">internal/domain/tenant.go</div>
+          </div>
+          <span class="tag tag-warn">WARNING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            <code>api_key_hash VARCHAR(64)</code> implies SHA-256. The comment in
+            <code>TenantRepository.GetByAPIKeyHash</code> says "SHA-256 API key hash". But nothing
+            in the domain <em>enforces</em> that only a hash reaches the database. A caller can
+            construct a <code>domain.Tenant</code> struct literal with a raw plaintext key and pass
+            it to <code>TenantRepository.Create()</code> — the type system will not stop them.
+          </p>
+          <span class="fix-label">Add a constructor that enforces the invariant</span>
+          <pre><span class="line-good">func NewTenant(name, rawAPIKey string) (*Tenant, error) {</span>
+<span class="line-good">    if rawAPIKey == "" {</span>
+<span class="line-good">        return nil, errors.New("api key must not be empty")</span>
+<span class="line-good">    }</span>
+<span class="line-good">    h := sha256.Sum256([]byte(rawAPIKey))</span>
+<span class="line-good">    return &Tenant{</span>
+<span class="line-good">        ID:         uuid.New(),</span>
+<span class="line-good">        Name:       name,</span>
+<span class="line-good">        APIKeyHash: hex.EncodeToString(h[:]),</span>
+<span class="line-good">        CreatedAt:  time.Now().UTC(),</span>
+<span class="line-good">    }, nil</span>
+<span class="line-good">}</span></pre>
+        </div>
+      </div>
+
+      <!-- W4 -->
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title"><code>DependsOn</code> is a single UUID — no cycle detection, no fan-in</div>
+            <div class="finding-subtitle">internal/domain/job.go · Job.DependsOn</div>
+          </div>
+          <span class="tag tag-warn">WARNING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            The current schema supports exactly one parent per job. If a client submits Job A
+            depending on Job B, and Job B depending on Job A, the cascade abort (ADR 010) never
+            fires because neither job reaches a terminal state on its own. This is a distributed
+            deadlock with no self-healing path. There is no cycle-detection anywhere in the domain
+            or repository layer.
+          </p>
+          <p>
+            At minimum, on job submission the scheduler must walk the dependency chain upward and
+            reject any submission that would form a cycle. A simple ancestor-set check at submit
+            time is sufficient given the single-parent model.
+          </p>
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ── Missing Pieces ─────────────────────────────────────── -->
+    <section id="improvements">
+      <div class="section-header">
+        <h3>Missing Pieces</h3>
+        <span class="tag tag-info">NOT YET BUILT</span>
+      </div>
+
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">No <code>cmd/</code> entrypoints — scheduler and worker binaries do not exist</div>
+            <div class="finding-subtitle">project root</div>
+          </div>
+          <span class="tag tag-info">MISSING</span>
+        </div>
+        <div class="finding-body">
+          <p>There is no <code>cmd/scheduler/main.go</code> or <code>cmd/worker/main.go</code>.
+          Nothing compiles to a runnable binary. These are the next build targets after the
+          repository implementations are in place.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">No <code>docker-compose.yml</code> — local dev requires manual infra setup</div>
+            <div class="finding-subtitle">project root</div>
+          </div>
+          <span class="tag tag-info">MISSING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            The system requires Postgres, Redis, and RabbitMQ. Without a compose file, every
+            contributor provisions these manually. The compose file should run
+            <code>migrate -path ./migrations up</code> as a Postgres init step so the schema
+            is applied automatically on first boot.
+          </p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">No <code>Makefile</code> — build, test, proto-gen, migrate are all undiscoverable</div>
+            <div class="finding-subtitle">project root</div>
+          </div>
+          <span class="tag tag-info">DX</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            There are no scripts for <code>make test</code>, <code>make proto</code>,
+            <code>make migrate</code>, or <code>make lint</code>. A <code>Makefile</code> or
+            <code>Taskfile.yml</code> is the cheapest documentation you can write and the fastest
+            way to onboard a new contributor.
+          </p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-header">
+          <div>
+            <div class="finding-title">No integration tests — repository layer has 0% coverage</div>
+            <div class="finding-subtitle">internal/repository/*</div>
+          </div>
+          <span class="tag tag-info">TESTING</span>
+        </div>
+        <div class="finding-body">
+          <p>
+            The domain unit tests are good and pass. But the repository interfaces — which contain
+            the most dangerous logic (<code>FOR UPDATE SKIP LOCKED</code>, fencing token checks,
+            composite index queries) — have zero test files. These need integration tests against
+            a real Postgres in Docker, using <code>testcontainers-go</code> or a local compose
+            service in CI.
+          </p>
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ── Next Steps ─────────────────────────────────────────── -->
+    <section id="roadmap">
+      <div class="section-header">
+        <h3>Suggested Next Steps</h3>
+        <span class="tag tag-ok">ROADMAP</span>
+      </div>
+
+      <div class="roadmap">
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Now</div>
+          <div class="roadmap-content">
+            <h4>1 · Fix TransitionTo() + add NewTenant() constructor</h4>
+            <p>Two targeted changes to existing files. Both are under 10 lines. Prevents stale
+            timestamps and the plaintext-key footgun before any service layer is built on top.</p>
+          </div>
+        </div>
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Now</div>
+          <div class="roadmap-content">
+            <h4>2 · Add buf.yaml + generate proto stubs</h4>
+            <p>Run <code>buf dep update &amp;&amp; buf generate</code> to produce
+            <code>pkg/api/v1</code>. This unblocks every gRPC handler and should be committed
+            to the repo so the module compiles cleanly.</p>
+          </div>
+        </div>
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Week 1</div>
+          <div class="roadmap-content">
+            <h4>3 · Implement Postgres repositories</h4>
+            <p>One file per repository under <code>internal/postgres/</code>. Start with
+            <code>JobRepository</code> — it has the most complex queries. Write integration tests
+            against real Postgres using testcontainers.</p>
+          </div>
+        </div>
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Week 1–2</div>
+          <div class="roadmap-content">
+            <h4>4 · Wire Scheduler gRPC service + priority mapper</h4>
+            <p>Implement the gRPC handlers for SchedulerService, including the explicit
+            proto-to-domain priority conversion. Add the outbox dispatcher loop and the
+            Redis lease client.</p>
+          </div>
+        </div>
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Week 2</div>
+          <div class="roadmap-content">
+            <h4>5 · cmd/ entrypoints + docker-compose + Makefile</h4>
+            <p>Add <code>cmd/scheduler/main.go</code> and <code>cmd/worker/main.go</code>.
+            Compose file with Postgres, Redis, RabbitMQ, and auto-migration. Makefile with
+            test, build, proto, and migrate targets.</p>
+          </div>
+        </div>
+
+        <div class="roadmap-item">
+          <div class="roadmap-phase">Week 3</div>
+          <div class="roadmap-content">
+            <h4>6 · End-to-end integration test</h4>
+            <p>Full flow: submit job → dispatch → worker picks up via RabbitMQ → heartbeat
+            renews lease → completion reported → dependent job unlocked → audit trail verified.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        All findings verified against live source ·
+        <code>go build ./...</code> ✓ ·
+        <code>go test ./...</code> ✓ ·
+        <code>go vet ./...</code> ✓ ·
+        Go 1.26.5 darwin/arm64
+      </p>
+    </footer>
+
+  </main>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package v1;
+
+option go_package = "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+import "proto/v1/job.proto";
+
+// SchedulerService orchestrates job submissions, queries, state transitions,
+// dependency resolutions, outbox reconciliation, and dispatching.
+service SchedulerService {
+  // SubmitJob validates and persists a job via transactional outbox.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // GetJob retrieves the current state and metadata of a specific job.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+
+  // ListJobs returns a paginated list of jobs for a tenant with optional filtering.
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+  // CancelJob cancels a job only if it is currently in PENDING status.
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // GetJobEvents returns the audit trail of status transitions for a job.
+  rpc GetJobEvents(GetJobEventsRequest) returns (GetJobEventsResponse);
+
+  // ReportJobCompletion is invoked when a worker finishes job execution,
+  // resolving any downstream dependent jobs.
+  rpc ReportJobCompletion(ReportJobCompletionRequest) returns (ReportJobCompletionResponse);
+
+  // Dispatch manually or periodically triggers scheduling and dispatch of ready jobs.
+  rpc Dispatch(DispatchRequest) returns (DispatchResponse);
+
+  // TriggerReconciliation manually kicks off outbox reconciliation for unpublished jobs.
+  rpc TriggerReconciliation(TriggerReconciliationRequest) returns (TriggerReconciliationResponse);
+}
+
+message SubmitJobRequest {
+  string tenant_id = 1;
+  string name = 2;
+  bytes payload = 3;
+  JobPriority priority = 4;
+  int32 max_attempts = 5;
+  optional string depends_on = 6;
+  optional google.protobuf.Timestamp scheduled_at = 7;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+}
+
+message GetJobRequest {
+  string tenant_id = 1;
+  string job_id = 2;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {
+  string tenant_id = 1;
+  optional JobStatus status = 2;
+  optional JobPriority priority = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  int64 total_count = 2;
+}
+
+message CancelJobRequest {
+  string tenant_id = 1;
+  string job_id = 2;
+  string reason = 3;
+}
+
+message CancelJobResponse {
+  Job job = 1;
+  string message = 2;
+}
+
+message GetJobEventsRequest {
+  string tenant_id = 1;
+  string job_id = 2;
+}
+
+message GetJobEventsResponse {
+  repeated JobEvent events = 1;
+}
+
+message ReportJobCompletionRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  JobStatus final_status = 3;
+  int64 fencing_token = 4;
+  string error_message = 5;
+}
+
+message ReportJobCompletionResponse {
+  bool acknowledged = 1;
+  int32 dependents_unlocked = 2;
+}
+
+message DispatchRequest {
+  int32 batch_size = 1;
+}
+
+message DispatchResponse {
+  int32 dispatched_count = 1;
+}
+
+message TriggerReconciliationRequest {
+  bool force = 1;
+}
+
+message TriggerReconciliationResponse {
+  int32 reconciled_count = 1;
+}

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package v1;
+
+option go_package = "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+import "proto/v1/job.proto";
+
+// WorkerService exposes execution, telemetry, lease heartbeat renewal,
+// and cancellation control over distributed worker nodes.
+service WorkerService {
+  // Execute directly submits or dispatches a job to a worker node for execution.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // Heartbeat periodically renews the worker lease and checks if abort was requested.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // GetWorkerStatus queries the current capacity, concurrency, and active tasks on the worker.
+  rpc GetWorkerStatus(GetWorkerStatusRequest) returns (GetWorkerStatusResponse);
+
+  // CancelExecution instructs the worker to abort context for an in-flight job.
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+
+  // DrainWorker stops accepting new jobs and waits for active jobs to complete.
+  rpc DrainWorker(DrainWorkerRequest) returns (DrainWorkerResponse);
+}
+
+message ExecuteRequest {
+  Job job = 1;
+}
+
+message ExecuteResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  string job_id = 2;
+  int64 fencing_token = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message HeartbeatResponse {
+  bool renewed = 1;
+  bool abort_requested = 2;
+  string message = 3;
+}
+
+message GetWorkerStatusRequest {}
+
+message ActiveJobInfo {
+  string job_id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  google.protobuf.Timestamp started_at = 4;
+  int64 fencing_token = 5;
+}
+
+message GetWorkerStatusResponse {
+  string worker_id = 1;
+  int32 active_jobs_count = 2;
+  int32 max_concurrency = 3;
+  repeated string registered_handlers = 4;
+  int64 uptime_seconds = 5;
+  bool is_draining = 6;
+  repeated ActiveJobInfo active_jobs = 7;
+}
+
+message CancelExecutionRequest {
+  string job_id = 1;
+  string reason = 2;
+}
+
+message CancelExecutionResponse {
+  bool cancelled = 1;
+  string message = 2;
+}
+
+message DrainWorkerRequest {
+  int32 timeout_seconds = 1;
+}
+
+message DrainWorkerResponse {
+  bool acknowledged = 1;
+  int32 remaining_active_jobs = 2;
+}
