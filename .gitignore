@@ -1,0 +1,48 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+scheduler
+worker
+demo
+/bin/
+/dist/
+
+# Go build / test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+/vendor/
+
+# Go workspace
+go.work.sum
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Env / secrets - NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Docker / local data
+*.log
+tmp/
+data/
+
+# HTML test reports (regeneratable) - uncomment if you don't want these in git
+# docs/*.html
