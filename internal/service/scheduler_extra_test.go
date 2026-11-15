@@ -71,7 +71,7 @@ func TestScheduler_ErrorPaths(t *testing.T) {
 		s, b := newTestScheduler()
 		tn := seedTenant(t, s, b)
 		j, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-		_, _ = s.DispatchReady(ctx, 10)
+		claimTestJob(t, s, j.ID, "w")
 		if _, err := s.CancelJob(ctx, j.ID, "late"); err != domain.ErrJobCannotBeCancelled {
 			t.Fatalf("got %v", err)
 		}
@@ -113,8 +113,8 @@ func TestScheduler_ErrorPaths(t *testing.T) {
 		j, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
 		// Leave the job genuinely stuck in failed (e.g. worker crashed after
 		// reporting failure but before recycling): drive the repo directly.
-		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, 0)
-		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusFailed, 0)
+		token := claimTestJob(t, s, j.ID, "w")
+		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusFailed, token)
 		stored, _ := b.Jobs.GetByID(ctx, j.ID)
 		past := time.Now().UTC().Add(-time.Second)
 		stored.NextRetryAt = &past
@@ -164,6 +164,7 @@ func TestScheduler_RetryBackoffBlocksReadyDispatch(t *testing.T) {
 	if _, err := s.DispatchReady(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
+	claimTestJob(t, s, j.ID, "w")
 	running, _ := s.GetJob(ctx, j.ID)
 	if _, err := s.ReportCompletion(ctx, j.ID, "w", domain.StatusFailed, running.FencingToken, "temporary"); err != nil {
 		t.Fatal(err)

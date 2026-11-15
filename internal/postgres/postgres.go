@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,6 +115,7 @@ func scanJob(row pgx.Row) (*domain.Job, error) {
 		&j.ID, &j.TenantID, &j.Name, &j.Status, &payload,
 		&j.Priority, &j.AttemptCount, &j.MaxAttempts, &dependsOn,
 		&j.FencingToken, &j.ScheduledAt, &nextRetry, &j.CreatedAt, &j.UpdatedAt,
+		&j.LeaseOwner, &j.LeaseExpiresAt,
 	); err != nil {
 		return nil, err
 	}
@@ -123,16 +125,17 @@ func scanJob(row pgx.Row) (*domain.Job, error) {
 	return &j, nil
 }
 
-const jobColumns = `id, tenant_id, name, status, payload, priority, attempt_count, max_attempts, depends_on, fencing_token, scheduled_at, next_retry_at, created_at, updated_at`
+const jobColumns = `id, tenant_id, name, status, payload, priority, attempt_count, max_attempts, depends_on, fencing_token, scheduled_at, next_retry_at, created_at, updated_at, lease_owner, lease_expires_at`
 
 func (r *JobRepo) Create(ctx context.Context, job *domain.Job) error {
 	db := dbFromCtx(ctx, r.db)
 	_, err := db.Exec(ctx, `INSERT INTO jobs (`+jobColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (id) DO NOTHING`,
 		job.ID, job.TenantID, job.Name, string(job.Status), string(job.Payload),
 		int(job.Priority), job.AttemptCount, job.MaxAttempts, job.DependsOn,
-		job.FencingToken, job.ScheduledAt, job.NextRetryAt, job.CreatedAt, job.UpdatedAt)
+		job.FencingToken, job.ScheduledAt, job.NextRetryAt, job.CreatedAt, job.UpdatedAt,
+		job.LeaseOwner, job.LeaseExpiresAt)
 	return err
 }
 
@@ -141,7 +144,7 @@ func (r *JobRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Job, error
 	row := db.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1`, id)
 	j, err := scanJob(row)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrJobNotFound
 		}
 		return nil, err
@@ -154,7 +157,7 @@ func (r *JobRepo) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.J
 	row := db.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1 FOR UPDATE`, id)
 	j, err := scanJob(row)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrJobNotFound
 		}
 		return nil, err
@@ -211,10 +214,10 @@ func (r *JobRepo) Cancel(ctx context.Context, id uuid.UUID) (*domain.Job, error)
 	db := dbFromCtx(ctx, r.db)
 	// Strictly only pending jobs may be cancelled (matches CanCancel).
 	var updatedID uuid.UUID
-	err := db.QueryRow(ctx, `UPDATE jobs SET status='cancelled'
+	err := db.QueryRow(ctx, `UPDATE jobs SET status='cancelled', lease_owner=NULL, lease_expires_at=NULL
 		WHERE id=$1 AND status='pending' RETURNING id`, id).Scan(&updatedID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			// Distinguish not-found from wrong-status.
 			if _, gerr := r.GetByID(ctx, id); gerr != nil {
 				return nil, gerr
@@ -231,8 +234,10 @@ func (r *JobRepo) TransitionStatus(ctx context.Context, id uuid.UUID, from, to d
 	if err := domain.ValidateTransition(from, to); err != nil {
 		return err
 	}
-	tag, err := db.Exec(ctx, `UPDATE jobs SET status=$1
-		WHERE id=$2 AND status=$3 AND fencing_token <= $4`, string(to), id, string(from), fencingToken)
+	tag, err := db.Exec(ctx, `UPDATE jobs SET status=$1,
+		lease_owner=CASE WHEN $1='running' THEN lease_owner ELSE NULL END,
+		lease_expires_at=CASE WHEN $1='running' THEN lease_expires_at ELSE NULL END
+		WHERE id=$2 AND status=$3 AND fencing_token = $4`, string(to), id, string(from), fencingToken)
 	if err != nil {
 		return err
 	}
@@ -241,7 +246,7 @@ func (r *JobRepo) TransitionStatus(ctx context.Context, id uuid.UUID, from, to d
 		if gerr != nil {
 			return gerr
 		}
-		if j.FencingToken > fencingToken {
+		if j.FencingToken != fencingToken {
 			return domain.ErrFencingTokenStale
 		}
 		return domain.ErrInvalidTransition
@@ -250,12 +255,13 @@ func (r *JobRepo) TransitionStatus(ctx context.Context, id uuid.UUID, from, to d
 }
 
 func (r *JobRepo) UpdateWithFencingToken(ctx context.Context, job *domain.Job, expectedToken int64) error {
+	if job.FencingToken != expectedToken { return domain.ErrFencingTokenStale }
 	db := dbFromCtx(ctx, r.db)
 	tag, err := db.Exec(ctx, `UPDATE jobs
-		SET status=$1, payload=$2, attempt_count=$3, max_attempts=$4, next_retry_at=$5, fencing_token=$6
-		WHERE id=$7 AND fencing_token <= $8`,
-		string(job.Status), string(job.Payload), job.AttemptCount, job.MaxAttempts,
-		job.NextRetryAt, job.FencingToken, job.ID, expectedToken)
+		SET payload=$1, attempt_count=$2, max_attempts=$3, next_retry_at=$4
+		WHERE id=$5 AND fencing_token=$6 AND status=$7`,
+		string(job.Payload), job.AttemptCount, job.MaxAttempts,
+		job.NextRetryAt, job.ID, expectedToken, string(job.Status))
 	if err != nil {
 		return err
 	}
@@ -264,10 +270,10 @@ func (r *JobRepo) UpdateWithFencingToken(ctx context.Context, job *domain.Job, e
 		if gerr != nil {
 			return gerr
 		}
-		if stored.FencingToken > expectedToken {
+		if stored.FencingToken != expectedToken {
 			return domain.ErrFencingTokenStale
 		}
-		return domain.ErrJobNotFound
+		return domain.ErrInvalidTransition
 	}
 	return nil
 }
@@ -339,17 +345,55 @@ func (r *JobRepo) GetDependentJobs(ctx context.Context, parentJobID uuid.UUID) (
 	return out, rows.Err()
 }
 
-func (r *JobRepo) IncrementFencingToken(ctx context.Context, id uuid.UUID) (int64, error) {
-	db := dbFromCtx(ctx, r.db)
+func (r *JobRepo) ClaimJob(ctx context.Context, id uuid.UUID, workerID string, ttl time.Duration) (int64, error) {
+	if workerID == "" || ttl <= 0 { return 0, domain.ErrInvalidLease }
 	var token int64
-	err := db.QueryRow(ctx, `UPDATE jobs SET fencing_token = fencing_token + 1 WHERE id=$1 RETURNING fencing_token`, id).Scan(&token)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return 0, domain.ErrJobNotFound
-		}
-		return 0, err
+	err := dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE jobs
+		SET status='running', fencing_token=fencing_token+1,
+		lease_owner=$2, lease_expires_at=NOW()+make_interval(secs => $3)
+		WHERE id=$1 AND status='pending' AND scheduled_at <= NOW()
+		AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+		AND (depends_on IS NULL OR depends_on IN (SELECT id FROM jobs WHERE status='succeeded'))
+		RETURNING fencing_token`, id, workerID, ttl.Seconds()).Scan(&token)
+	if errors.Is(err, pgx.ErrNoRows) { return 0, domain.ErrJobNotClaimable }
+	return token, err
+}
+
+func (r *JobRepo) RenewLease(ctx context.Context, id uuid.UUID, workerID string, token int64, ttl time.Duration) error {
+	if workerID == "" || ttl <= 0 { return domain.ErrInvalidLease }
+	tag, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE jobs
+		SET lease_expires_at=NOW()+make_interval(secs => $4)
+		WHERE id=$1 AND status='running' AND fencing_token=$2 AND lease_owner=$3
+		AND lease_expires_at > NOW()`, id, token, workerID, ttl.Seconds())
+	if err != nil { return err }
+	if tag.RowsAffected() == 0 { return domain.ErrLeaseLost }
+	return nil
+}
+
+func (r *JobRepo) GetExpiredLeasesForUpdate(ctx context.Context, limit int) ([]*domain.Job, error) {
+	if limit <= 0 { limit = 100 }
+	rows, err := dbFromCtx(ctx, r.db).Query(ctx, `SELECT `+jobColumns+` FROM jobs
+		WHERE status='running' AND lease_expires_at < NOW()
+		ORDER BY lease_expires_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var out []*domain.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil { return nil, err }
+		out = append(out, j)
 	}
-	return token, nil
+	return out, rows.Err()
+}
+
+func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*domain.Job, error) {
+	j, err := scanJob(dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE jobs
+		SET status='failed', fencing_token=fencing_token+1, attempt_count=attempt_count+1,
+		lease_owner=NULL, lease_expires_at=NULL
+		WHERE id=$1 AND status='running' AND fencing_token=$2 AND lease_expires_at < NOW()
+		RETURNING `+jobColumns, id, token))
+	if errors.Is(err, pgx.ErrNoRows) { return nil, domain.ErrLeaseLost }
+	return j, err
 }
 
 // --- Tenants ---
@@ -368,7 +412,7 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at FROM tenants WHERE id=$1`, id).
 		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound
 		}
 		return nil, err
@@ -382,7 +426,7 @@ func (r *TenantRepo) GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*d
 	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at FROM tenants WHERE api_key_hash=$1`, apiKeyHash).
 		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound
 		}
 		return nil, err

@@ -12,9 +12,17 @@ var (
 	// ErrInvalidTransition indicates an illegal state machine jump.
 	ErrInvalidTransition = errors.New("invalid job status transition")
 
-	// ErrFencingTokenStale is raised when a worker attempts to update a job using a lease/token
-	// that has been superseded by a higher fencing token.
-	ErrFencingTokenStale = errors.New("fencing token is stale: lease expired or superseded")
+	// ErrFencingTokenStale rejects any token unequal to the stored execution token.
+	ErrFencingTokenStale = errors.New("fencing token does not match current execution")
+
+	// ErrJobNotClaimable indicates a duplicate, stale, or not-yet-ready announcement.
+	ErrJobNotClaimable = errors.New("job is not ready to be claimed")
+
+	// ErrLeaseLost indicates the execution no longer owns a live lease.
+	ErrLeaseLost = errors.New("job lease lost")
+
+	// ErrInvalidLease indicates an empty owner or nonpositive lease duration.
+	ErrInvalidLease = errors.New("lease requires a worker ID and positive TTL")
 
 	// ErrDependencyNotMet indicates a parent job has not successfully completed.
 	ErrDependencyNotMet = errors.New("job dependency has not succeeded yet")

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
@@ -24,15 +25,15 @@ func NewSchedulerServer(s *Scheduler) *SchedulerServer {
 }
 
 func toGRPCError(err error) error {
-	switch err {
-	case domain.ErrJobNotFound, domain.ErrTenantNotFound:
-		return status.Error(codes.NotFound, err.Error())
-	case domain.ErrInvalidTransition, domain.ErrJobCannotBeCancelled, domain.ErrDependencyCycle, domain.ErrDependencyNotMet:
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case domain.ErrFencingTokenStale:
-		return status.Error(codes.Aborted, err.Error())
-	case nil:
+	switch {
+	case err == nil:
 		return nil
+	case errors.Is(err, domain.ErrJobNotFound), errors.Is(err, domain.ErrTenantNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrJobCannotBeCancelled), errors.Is(err, domain.ErrDependencyCycle), errors.Is(err, domain.ErrDependencyNotMet), errors.Is(err, domain.ErrJobNotClaimable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, domain.ErrFencingTokenStale), errors.Is(err, domain.ErrLeaseLost):
+		return status.Error(codes.Aborted, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

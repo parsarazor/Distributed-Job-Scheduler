@@ -2,26 +2,26 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"golang.org/x/sync/semaphore"
 )
 
-// Handler executes one job. It must respect ctx cancellation (Drain support).
+// Handler executes one job. It must respect ctx cancellation, including lease loss.
 type Handler func(ctx context.Context, job *domain.Job) error
 
-// Worker pulls jobs from the Scheduler, executes them with bounded
-// concurrency (ADR 005), renews leases via heartbeat, and reports completion
-// with fencing tokens (ADR 002/009).
+// Worker claims jobs atomically through the repository, executes them with
+// bounded concurrency and renews their leases until execution finishes.
 type Worker struct {
 	id             string
 	sched          *Scheduler
-	leases         lease.LeaseManager
+	leaseTTL       time.Duration
 	sem            *semaphore.Weighted
 	maxConcurrency int64
 	handlers       map[string]Handler
@@ -32,27 +32,27 @@ type Worker struct {
 }
 
 type activeJob struct {
-	job        *domain.Job
-	token      int64 // database fencing token used for completion reports
-	leaseToken int64 // lease-manager token used for renewals
-	started    time.Time
-	cancel     context.CancelFunc
+	info     ActiveInfo
+	cancel   context.CancelCauseFunc
+	mu       sync.Mutex // serializes automatic and RPC renewals with completion
+	deadline time.Time
+	finished bool
 }
 
-// NewWorker creates a worker with maxConcurrency execution slots.
-func NewWorker(id string, sched *Scheduler, leases lease.LeaseManager, maxConcurrency int64) *Worker {
+// NewWorker creates a worker with maxConcurrency slots and a repository-owned lease.
+// Nonpositive values select the defaults of 10 slots and a 30-second lease.
+func NewWorker(id string, sched *Scheduler, maxConcurrency int64, leaseTTL time.Duration) *Worker {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 10
 	}
+	if leaseTTL <= 0 {
+		leaseTTL = 30 * time.Second
+	}
 	return &Worker{
-		id:             id,
-		sched:          sched,
-		leases:         leases,
-		sem:            semaphore.NewWeighted(maxConcurrency),
-		maxConcurrency: maxConcurrency,
-		handlers:       make(map[string]Handler),
-		active:         make(map[uuid.UUID]*activeJob),
-		startedAt:      time.Now().UTC(),
+		id: id, sched: sched, leaseTTL: leaseTTL,
+		sem: semaphore.NewWeighted(maxConcurrency), maxConcurrency: maxConcurrency,
+		handlers: make(map[string]Handler), active: make(map[uuid.UUID]*activeJob),
+		startedAt: time.Now().UTC(),
 	}
 }
 
@@ -67,18 +67,26 @@ func (w *Worker) RegisterHandler(name string, h Handler) {
 func (w *Worker) ID() string { return w.id }
 
 // Drain stops accepting new jobs; in-flight jobs run to completion.
-func (w *Worker) Drain() { w.mu.Lock(); w.draining = true; w.mu.Unlock() }
+func (w *Worker) Drain() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.draining = true
+}
 
 // IsDraining reports drain state.
-func (w *Worker) IsDraining() bool { w.mu.RLock(); defer w.mu.RUnlock(); return w.draining }
+func (w *Worker) IsDraining() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.draining
+}
 
 // ActiveJobs returns a snapshot of in-flight jobs.
 func (w *Worker) ActiveJobs() []ActiveInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	out := make([]ActiveInfo, 0, len(w.active))
-	for id, a := range w.active {
-		out = append(out, ActiveInfo{JobID: id, TenantID: a.job.TenantID, Name: a.job.Name, StartedAt: a.started, FencingToken: a.token})
+	for _, a := range w.active {
+		out = append(out, a.info)
 	}
 	return out
 }
@@ -92,13 +100,9 @@ type ActiveInfo struct {
 	FencingToken int64
 }
 
-// RunOnce dispatches ready jobs and executes one batch synchronously.
-// It is the functional core used by the demo binary and tests.
+// RunOnce polls ready jobs and executes one batch synchronously.
 func (w *Worker) RunOnce(ctx context.Context, batchSize int) (int, error) {
-	w.mu.RLock()
-	draining := w.draining
-	w.mu.RUnlock()
-	if draining {
+	if w.IsDraining() {
 		return 0, nil
 	}
 	ready, err := w.sched.jobs.GetReadyJobs(ctx, batchSize)
@@ -107,30 +111,35 @@ func (w *Worker) RunOnce(ctx context.Context, batchSize int) (int, error) {
 	}
 	done := 0
 	for _, job := range ready {
-		if err := w.sem.Acquire(ctx, 1); err != nil {
+		if w.IsDraining() {
 			break
 		}
-		if err := w.execute(ctx, job); err == nil {
+		if err := w.sem.Acquire(ctx, 1); err != nil {
+			return done, err
+		}
+		ran, err := w.execute(ctx, job)
+		w.sem.Release(1)
+		if err != nil {
+			return done, err
+		}
+		if ran {
 			done++
 		}
-		w.sem.Release(1)
 	}
 	return done, nil
 }
 
-// StartExecution accepts a broker-delivered job without exceeding the worker's
-// concurrency limit. It returns false when draining or saturated so callers
-// can requeue the delivery instead of silently losing it.
+// StartExecution accepts an announcement without exceeding the execution limit.
+// Acceptance is not ownership: execute still has to win the repository claim.
 func (w *Worker) StartExecution(ctx context.Context, job *domain.Job) bool {
-	w.mu.RLock()
-	draining := w.draining
-	w.mu.RUnlock()
-	if draining || !w.sem.TryAcquire(1) {
+	if job == nil || w.IsDraining() || !w.sem.TryAcquire(1) {
 		return false
 	}
 	go func() {
 		defer w.sem.Release(1)
-		_ = w.execute(ctx, job)
+		if _, err := w.execute(ctx, job); err != nil {
+			log.Printf("worker %s execute %s: %v", w.id, job.ID, err)
+		}
 	}()
 	return true
 }
@@ -138,116 +147,156 @@ func (w *Worker) StartExecution(ctx context.Context, job *domain.Job) bool {
 // MaxConcurrency returns the configured execution limit.
 func (w *Worker) MaxConcurrency() int64 { return w.maxConcurrency }
 
-func (w *Worker) execute(ctx context.Context, job *domain.Job) error {
-	w.mu.RLock()
-	h := w.handlers[job.Name]
-	fallback := w.handlers["default"]
-	w.mu.RUnlock()
-	if h == nil {
-		h = fallback
-	}
-	if h == nil {
-		h = func(context.Context, *domain.Job) error { return nil }
-	}
-
-	leaseToken, err := w.leases.Acquire(ctx, job.ID, w.id, 30*time.Second)
-	if err != nil {
-		return err
-	}
-	current, err := w.sched.jobs.GetByID(ctx, job.ID)
-	if err != nil {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return err
-	}
-	if current.IsTerminal() {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return nil // duplicate delivery of an already-completed job
-	}
-	if current.Status != domain.StatusPending && current.Status != domain.StatusRunning {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return domain.ErrInvalidTransition
-	}
-	token, err := w.sched.jobs.IncrementFencingToken(ctx, job.ID)
-	if err != nil {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return err
-	}
-	if current.Status == domain.StatusPending {
-		if err := w.sched.jobs.TransitionStatus(ctx, job.ID, domain.StatusPending, domain.StatusRunning, token); err != nil {
-			_ = w.leases.Release(ctx, job.ID, w.id)
+func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, error) {
+	var job *domain.Job
+	var token int64
+	var claimedAt time.Time
+	err := w.sched.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		claimedAt = time.Now()
+		var err error
+		token, err = w.sched.jobs.ClaimJob(ctx, announcement.ID, w.id, w.leaseTTL)
+		if err != nil {
 			return err
 		}
+		job, err = w.sched.jobs.GetByID(ctx, announcement.ID)
+		if err != nil {
+			return err
+		}
+		return w.sched.recordTransition(ctx, job.ID, domain.StatusPending, domain.StatusRunning, w.id, "")
+	})
+	if errors.Is(err, domain.ErrJobNotClaimable) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 
-	job = current
-	job.FencingToken = token
-	jobCtx, cancel := context.WithCancel(ctx)
+	jobCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	a := &activeJob{
+		info: ActiveInfo{JobID: job.ID, TenantID: job.TenantID, Name: job.Name, StartedAt: time.Now().UTC(), FencingToken: token},
+		cancel: cancel, deadline: claimedAt.Add(w.leaseTTL),
+	}
 	w.mu.Lock()
-	w.active[job.ID] = &activeJob{job: job, token: token, leaseToken: leaseToken, started: time.Now().UTC(), cancel: cancel}
+	h := w.handlers[job.Name]
+	if h == nil {
+		h = w.handlers["default"]
+	}
+	w.active[job.ID] = a
 	w.mu.Unlock()
-
-	// Heartbeat renews the lease until execution finishes.
-	stopHb := make(chan struct{})
-	go func() {
-		t := time.NewTicker(10 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-stopHb:
-				return
-			case <-t.C:
-				_ = w.leases.Renew(context.Background(), job.ID, w.id, leaseToken, 30*time.Second)
-			case <-jobCtx.Done():
-				return
-			}
-		}
+	defer func() {
+		w.mu.Lock()
+		delete(w.active, job.ID)
+		w.mu.Unlock()
 	}()
 
-	// A panicking handler must fail the job, not crash the worker or strand
-	// the lease: recover, report failure (→ retry path), always clean up.
+	hbCtx, stopHeartbeat := context.WithCancel(ctx)
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		w.heartbeatLoop(hbCtx, a)
+	}()
+
+	// A handler panic fails the attempt without crashing the worker.
 	runErr := func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				err = fmt.Errorf("handler panic: %v", r)
 			}
 		}()
+		if h == nil {
+			return nil
+		}
 		return h(jobCtx, job)
 	}()
-	close(stopHb)
-	cancel()
-	_ = w.leases.Release(ctx, job.ID, w.id)
-
-	w.mu.Lock()
-	delete(w.active, job.ID)
-	w.mu.Unlock()
-
-	final := domain.StatusSucceeded
-	msg := ""
-	if runErr != nil {
-		final = domain.StatusFailed
-		msg = runErr.Error()
+	stopHeartbeat()
+	<-hbDone
+	a.mu.Lock()
+	a.finished = true
+	if !time.Now().Before(a.deadline) {
+		cancel(domain.ErrLeaseLost)
 	}
-	_, repErr := w.sched.ReportCompletion(ctx, job.ID, w.id, final, token, msg)
-	return repErr
+	a.mu.Unlock()
+	if errors.Is(context.Cause(jobCtx), domain.ErrLeaseLost) {
+		log.Printf("worker %s lost lease for %s; completion withheld", w.id, a.info.JobID)
+		return true, nil
+	}
+
+	final, msg := domain.StatusSucceeded, ""
+	if runErr != nil {
+		final, msg = domain.StatusFailed, runErr.Error()
+	}
+	_, err = w.sched.ReportCompletion(ctx, a.info.JobID, w.id, final, token, msg)
+	return true, err
 }
 
-// Heartbeat renews the lease for an in-flight job; abort is requested when
-// the job no longer exists or is terminal.
+func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
+	interval := w.leaseTTL / 3
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
+	for {
+		a.mu.Lock()
+		remaining := time.Until(a.deadline)
+		a.mu.Unlock()
+		if remaining <= 0 {
+			a.cancel(domain.ErrLeaseLost)
+			return
+		}
+		timer := time.NewTimer(min(interval, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if err := w.renewLease(ctx, a); err != nil {
+				if errors.Is(err, domain.ErrLeaseLost) {
+					return
+				}
+				if ctx.Err() == nil {
+					log.Printf("worker %s renew %s: %v", w.id, a.info.JobID, err)
+				}
+			}
+		}
+	}
+}
+
+func (w *Worker) renewLease(ctx context.Context, a *activeJob) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finished {
+		return domain.ErrLeaseLost
+	}
+	if !time.Now().Before(a.deadline) {
+		a.cancel(domain.ErrLeaseLost)
+		return domain.ErrLeaseLost
+	}
+	// A stuck renewal cannot outlive the last known lease deadline. Use the
+	// request start, not the reply time, for a conservative local deadline.
+	started := time.Now()
+	renewCtx, cancel := context.WithDeadline(ctx, a.deadline)
+	defer cancel()
+	err := w.sched.jobs.RenewLease(renewCtx, a.info.JobID, w.id, a.info.FencingToken, w.leaseTTL)
+	if errors.Is(err, domain.ErrLeaseLost) || !time.Now().Before(a.deadline) {
+		a.cancel(domain.ErrLeaseLost)
+		return domain.ErrLeaseLost
+	}
+	if err == nil {
+		a.deadline = started.Add(w.leaseTTL)
+	}
+	return err
+}
+
+// Heartbeat shares the automatic renewal path; lost ownership requests abort.
 func (w *Worker) Heartbeat(ctx context.Context, jobID uuid.UUID, token int64) (renewed bool, abort bool) {
 	w.mu.RLock()
 	a, active := w.active[jobID]
 	w.mu.RUnlock()
-	if !active || a.token != token {
+	if !active || a.info.FencingToken != token {
 		return false, true
 	}
-	if err := w.leases.Renew(ctx, jobID, w.id, a.leaseToken, 30*time.Second); err != nil {
-		return false, true
-	}
-	j, err := w.sched.jobs.GetByID(ctx, jobID)
-	if err != nil || j.IsTerminal() {
-		return true, true
-	}
-	return true, false
+	err := w.renewLease(ctx, a)
+	return err == nil, errors.Is(err, domain.ErrLeaseLost)
 }
 
 // CancelExecution aborts context for an in-flight job.
@@ -258,6 +307,6 @@ func (w *Worker) CancelExecution(jobID uuid.UUID) bool {
 	if !ok {
 		return false
 	}
-	a.cancel()
+	a.cancel(context.Canceled)
 	return true
 }

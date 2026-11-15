@@ -50,6 +50,7 @@ func TestIntegration_RetryThenDeadWithCascade(t *testing.T) {
 	child, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "c", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 2, DependsOn: &parent.ID, ScheduledAt: time.Now().UTC()})
 
 	_, _ = s.DispatchReady(ctx, 10)
+	claimTestJob(t, s, parent.ID, "w")
 	p1, _ := s.GetJob(ctx, parent.ID)
 	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusFailed, p1.FencingToken, "flaky"); err != nil {
 		t.Fatal(err)
@@ -72,6 +73,7 @@ func TestIntegration_RetryThenDeadWithCascade(t *testing.T) {
 		time.Sleep(wait)
 	}
 	_, _ = s.DispatchReady(ctx, 10)
+	claimTestJob(t, s, parent.ID, "w")
 	p3, _ := s.GetJob(ctx, parent.ID)
 	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusFailed, p3.FencingToken, "still down"); err != nil {
 		t.Fatal(err)

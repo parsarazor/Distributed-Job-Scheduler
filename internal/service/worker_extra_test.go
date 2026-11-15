@@ -10,17 +10,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 )
 
 func listAll() repository.JobListFilter { return repository.JobListFilter{} }
 
-var _ = time.Now
-
 func newTestWorker(s *Scheduler) *Worker {
-	w := NewWorker("test-worker", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("test-worker", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 	return w
 }
@@ -53,7 +50,7 @@ func TestWorker_HandlerErrorFailsJobWithRetry(t *testing.T) {
 	s, b := newTestScheduler()
 	tn := seedTenant(t, s, b)
 	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-	w := NewWorker("w", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("w", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		return errors.New("downstream 500")
 	})
@@ -76,7 +73,7 @@ func TestWorker_HandlerPanicFailsJobNotWorker(t *testing.T) {
 	s, b := newTestScheduler()
 	tn := seedTenant(t, s, b)
 	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-	w := NewWorker("w", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("w", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		panic("nil deref in user code")
 	})
@@ -124,18 +121,17 @@ func TestWorker_LeaseContentionSkipsJob(t *testing.T) {
 	job, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
 
 	// Another worker holds the lease: our worker must skip, not steal.
-	leases := lease.NewMemoryLeaseManager()
-	if _, err := leases.Acquire(ctx, job.ID, "rival", 30*time.Second); err != nil {
+	if _, err := b.Jobs.ClaimJob(ctx, job.ID, "rival", 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	w := NewWorker("us", s, leases, 4)
+	w := NewWorker("us", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 	if n, _ := w.RunOnce(ctx, 10); n != 0 {
 		t.Fatalf("leased job must be skipped, ran %d", n)
 	}
 	stored, _ := s.GetJob(ctx, job.ID)
-	if stored.Status != domain.StatusPending {
-		t.Fatalf("skipped job must stay pending, got %s", stored.Status)
+	if stored.Status != domain.StatusRunning || stored.LeaseOwner == nil || *stored.LeaseOwner != "rival" || stored.FencingToken != 1 {
+		t.Fatalf("skipped job must retain rival's claim, got %+v", stored)
 	}
 }
 

@@ -71,11 +71,13 @@ func TestFault_ZombieWriteAfterLeaseLoss(t *testing.T) {
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = s.tenants.Create(ctx, tn)
 	job, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-	_, _ = s.DispatchReady(ctx, 10) // running, token T
-
-	fresh, _ := s.GetJob(ctx, job.ID)
-	staleToken := fresh.FencingToken
-	_, _ = s.jobs.IncrementFencingToken(ctx, job.ID) // new owner takes over
+	staleToken, err := s.jobs.ClaimJob(ctx, job.ID, "zombie", time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ReapExpiredLeases(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("reap=%d err=%v", n, err)
+	}
 
 	if _, err := s.ReportCompletion(ctx, job.ID, "zombie", domain.StatusSucceeded, staleToken, ""); err != domain.ErrFencingTokenStale {
 		t.Fatalf("zombie write must be rejected, got %v", err)
@@ -124,5 +126,4 @@ func TestFault_SubmitValidation(t *testing.T) {
 	if _, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "x", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, DependsOn: &ghost, ScheduledAt: time.Now().UTC()}); err != domain.ErrDependencyNotMet {
 		t.Fatalf("unknown parent must fail, got %v", err)
 	}
-	_ = time.Now
 }
