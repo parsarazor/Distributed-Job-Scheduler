@@ -41,7 +41,7 @@ func TestContract_ListFilters(t *testing.T) {
 		_ = b.Jobs.Create(ctx, j)
 		// Drive to the wanted status through legal edges.
 		if st == domain.StatusRunning {
-			_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, 0)
+			_, _ = b.Jobs.ClaimJob(ctx, j.ID, "w", 30*time.Second)
 		}
 	}
 	mk("a", domain.StatusPending, domain.PriorityLow)
@@ -75,28 +75,28 @@ func TestContract_PendingRetryQuery(t *testing.T) {
 
 	due := testJob(tenant, "due", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, due)
-	_ = b.Jobs.TransitionStatus(ctx, due.ID, domain.StatusPending, domain.StatusRunning, 0)
-	_ = b.Jobs.TransitionStatus(ctx, due.ID, domain.StatusRunning, domain.StatusFailed, 0)
+	_, _ = b.Jobs.ClaimJob(ctx, due.ID, "w", 30*time.Second)
+	_ = b.Jobs.TransitionStatus(ctx, due.ID, domain.StatusRunning, domain.StatusFailed, 1)
 	stored, _ := b.Jobs.GetByID(ctx, due.ID)
 	stored.NextRetryAt = &past // attempts 0 < 3
-	_ = b.Jobs.UpdateWithFencingToken(ctx, stored, 0)
+	_ = b.Jobs.UpdateWithFencingToken(ctx, stored, stored.FencingToken)
 
 	waiting := testJob(tenant, "waiting", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, waiting)
-	_ = b.Jobs.TransitionStatus(ctx, waiting.ID, domain.StatusPending, domain.StatusRunning, 0)
-	_ = b.Jobs.TransitionStatus(ctx, waiting.ID, domain.StatusRunning, domain.StatusFailed, 0)
+	_, _ = b.Jobs.ClaimJob(ctx, waiting.ID, "w", 30*time.Second)
+	_ = b.Jobs.TransitionStatus(ctx, waiting.ID, domain.StatusRunning, domain.StatusFailed, 1)
 	stored2, _ := b.Jobs.GetByID(ctx, waiting.ID)
 	stored2.NextRetryAt = &future
-	_ = b.Jobs.UpdateWithFencingToken(ctx, stored2, 0)
+	_ = b.Jobs.UpdateWithFencingToken(ctx, stored2, stored2.FencingToken)
 
 	exhausted := testJob(tenant, "exhausted", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, exhausted)
-	_ = b.Jobs.TransitionStatus(ctx, exhausted.ID, domain.StatusPending, domain.StatusRunning, 0)
-	_ = b.Jobs.TransitionStatus(ctx, exhausted.ID, domain.StatusRunning, domain.StatusFailed, 0)
+	_, _ = b.Jobs.ClaimJob(ctx, exhausted.ID, "w", 30*time.Second)
+	_ = b.Jobs.TransitionStatus(ctx, exhausted.ID, domain.StatusRunning, domain.StatusFailed, 1)
 	stored3, _ := b.Jobs.GetByID(ctx, exhausted.ID)
 	stored3.NextRetryAt = &past
 	stored3.AttemptCount = stored3.MaxAttempts
-	_ = b.Jobs.UpdateWithFencingToken(ctx, stored3, 0)
+	_ = b.Jobs.UpdateWithFencingToken(ctx, stored3, stored3.FencingToken)
 
 	got, err := b.Jobs.GetPendingRetryJobs(ctx, 10)
 	if err != nil {
@@ -134,8 +134,8 @@ func TestContract_UpdateAndTokenErrors(t *testing.T) {
 	if err := b.Jobs.UpdateWithFencingToken(ctx, ghost, 0); err != domain.ErrJobNotFound {
 		t.Fatalf("update of ghost must be ErrJobNotFound, got %v", err)
 	}
-	if _, err := b.Jobs.IncrementFencingToken(ctx, uuid.New()); err != domain.ErrJobNotFound {
-		t.Fatalf("increment of ghost must be ErrJobNotFound, got %v", err)
+	if _, err := b.Jobs.ClaimJob(ctx, uuid.New(), "w", time.Second); err != domain.ErrJobNotClaimable {
+		t.Fatalf("claim of ghost must be ErrJobNotClaimable, got %v", err)
 	}
 	// Wrong-from transition surfaces invalid-transition, not stale.
 	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, 0); err != domain.ErrInvalidTransition {

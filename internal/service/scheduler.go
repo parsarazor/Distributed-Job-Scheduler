@@ -121,96 +121,103 @@ func (s *Scheduler) ListJobs(ctx context.Context, tenantID uuid.UUID, filter rep
 	return s.jobs.ListByTenant(ctx, tenantID, filter)
 }
 
-// CancelJob cancels a pending job and cascades to dependents (ADR 010).
+// CancelJob cancels a pending job and cascades atomically to dependents.
 func (s *Scheduler) CancelJob(ctx context.Context, id uuid.UUID, reason string) (*domain.Job, error) {
-	job, err := s.jobs.Cancel(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	_ = s.events.Record(ctx, &domain.JobEvent{
-		ID: job.ID, JobID: job.ID,
-		FromStatus: domain.StatusPending, ToStatus: domain.StatusCancelled,
-		OccurredAt: time.Now().UTC(), ErrorMessage: strptr(reason),
+	var job *domain.Job
+	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		var err error
+		job, err = s.jobs.Cancel(ctx, id)
+		if err != nil { return err }
+		if err := s.recordTransition(ctx, id, domain.StatusPending, domain.StatusCancelled, "", reason); err != nil { return err }
+		_, err = s.cancelDependents(ctx, id, "parent cancelled")
+		return err
 	})
-	// Cascade: dependents of a cancelled parent can never run.
-	_ = s.cancelDependents(ctx, id, "parent cancelled")
+	if err != nil { return nil, err }
 	return job, nil
 }
 
-// ReportCompletion applies a worker's terminal report with fencing-token
-// protection (ADR 009). It handles retries with backoff and cascade-abort.
-func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, fencingToken int64, errMsg string) (dependentsUnlocked int, err error) {
-	job, err := s.jobs.GetByID(ctx, jobID)
-	if err != nil {
-		return 0, err
-	}
-	from := job.Status
-	var to domain.JobStatus
-	switch final {
-	case domain.StatusSucceeded:
-		to = domain.StatusSucceeded
-	case domain.StatusFailed:
-		// Retry or die: decided below after incrementing attempt count.
-		to = domain.StatusFailed
-	default:
-		return 0, domain.ErrInvalidTransition
-	}
-
-	// Fencing: stale zombie writes fail harmlessly.
-	if job.FencingToken > fencingToken {
-		return 0, domain.ErrFencingTokenStale
-	}
-
-	updated := *job
-	if to == domain.StatusFailed {
-		updated.AttemptCount++
-	}
-	if err := s.jobs.UpdateWithFencingToken(ctx, &updated, fencingToken); err != nil {
-		return 0, err
-	}
-	if err := s.jobs.TransitionStatus(ctx, jobID, from, to, fencingToken); err != nil {
-		// UpdateWithFencingToken already persisted attempt bump; surface error.
-		return 0, err
-	}
-	_ = s.events.Record(ctx, &domain.JobEvent{
-		ID: uuid.New(), JobID: jobID, FromStatus: from, ToStatus: to,
-		OccurredAt: time.Now().UTC(), WorkerID: strptr(workerID), ErrorMessage: strptr(errMsg),
+// ReportCompletion serializes reports with claims/reaping and commits all
+// status, attempt, retry, audit and cascade effects in one transaction.
+func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, fencingToken int64, errMsg string) (int, error) {
+	if final != domain.StatusSucceeded && final != domain.StatusFailed { return 0, domain.ErrInvalidTransition }
+	n := 0
+	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		job, err := s.jobs.GetByIDForUpdate(ctx, jobID)
+		if err != nil { return err }
+		if job.FencingToken != fencingToken { return domain.ErrFencingTokenStale }
+		if job.Status != domain.StatusRunning { return domain.ErrInvalidTransition }
+		if job.LeaseOwner == nil || *job.LeaseOwner != workerID || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(time.Now().UTC()) { return domain.ErrLeaseLost }
+		if err := s.jobs.TransitionStatus(ctx, jobID, domain.StatusRunning, final, fencingToken); err != nil { return err }
+		if err := job.TransitionTo(final); err != nil { return err }
+		if final == domain.StatusFailed {
+			job.AttemptCount++
+			if err := s.jobs.UpdateWithFencingToken(ctx, job, fencingToken); err != nil { return err }
+		}
+		if err := s.recordTransition(ctx, jobID, domain.StatusRunning, final, workerID, errMsg); err != nil { return err }
+		if final == domain.StatusSucceeded {
+			deps, err := s.jobs.GetDependentJobs(ctx, jobID)
+			if err != nil { return err }
+			n = len(deps)
+			return nil
+		}
+		n, err = s.finishFailure(ctx, job)
+		return err
 	})
-
-	if to == domain.StatusSucceeded {
-		deps, _ := s.jobs.GetDependentJobs(ctx, jobID)
-		return len(deps), nil
-	}
-
-	// Failed: retry with backoff if attempts remain, else dead + cascade.
-	refresh, _ := s.jobs.GetByID(ctx, jobID)
-	if refresh.AttemptCount < refresh.MaxAttempts {
-		delay := s.backoff.NextDelay(refresh.AttemptCount)
-		next := time.Now().UTC().Add(delay)
-		refresh.NextRetryAt = &next
-		_ = s.jobs.UpdateWithFencingToken(ctx, refresh, fencingToken)
-		_ = s.jobs.TransitionStatus(ctx, jobID, domain.StatusFailed, domain.StatusPending, fencingToken)
-		_ = s.events.Record(ctx, &domain.JobEvent{
-			ID: uuid.New(), JobID: jobID,
-			FromStatus: domain.StatusFailed, ToStatus: domain.StatusPending,
-			OccurredAt: time.Now().UTC(), ErrorMessage: strptr("retry scheduled"),
-		})
-		// Re-enqueue for redispatch.
-		_ = s.outbox.Store(ctx, domain.NewOutboxEvent(jobID, "jobs.dispatch", mustMarshal(refresh)))
-		return 0, nil
-	}
-	_ = s.jobs.TransitionStatus(ctx, jobID, domain.StatusFailed, domain.StatusDead, fencingToken)
-	_ = s.events.Record(ctx, &domain.JobEvent{
-		ID: uuid.New(), JobID: jobID,
-		FromStatus: domain.StatusFailed, ToStatus: domain.StatusDead,
-		OccurredAt: time.Now().UTC(), ErrorMessage: strptr("retries exhausted"),
-	})
-	n := s.cancelDependents(ctx, jobID, "parent terminal failure")
+	if err != nil { return 0, err }
 	return n, nil
 }
 
-// DispatchReady moves up to batchSize ready jobs to running and publishes
-// each to the broker (message_id = job_id for idempotent redelivery).
+// finishFailure preserves running -> failed -> pending/dead for both worker
+// reports and expired leases. Its caller owns the transaction and row lock.
+func (s *Scheduler) finishFailure(ctx context.Context, job *domain.Job) (int, error) {
+	to, reason := domain.StatusDead, "retries exhausted"
+	job.NextRetryAt = nil
+	if job.AttemptCount < job.MaxAttempts {
+		to, reason = domain.StatusPending, "retry scheduled"
+		next := time.Now().UTC().Add(s.backoff.NextDelay(job.AttemptCount))
+		job.NextRetryAt = &next
+	}
+	if err := s.jobs.UpdateWithFencingToken(ctx, job, job.FencingToken); err != nil { return 0, err }
+	if err := s.jobs.TransitionStatus(ctx, job.ID, domain.StatusFailed, to, job.FencingToken); err != nil { return 0, err }
+	if err := job.TransitionTo(to); err != nil { return 0, err }
+	if err := s.recordTransition(ctx, job.ID, domain.StatusFailed, to, "", reason); err != nil { return 0, err }
+	if to == domain.StatusPending {
+		return 0, s.outbox.Store(ctx, domain.NewOutboxEvent(job.ID, "jobs.dispatch", mustMarshal(job)))
+	}
+	return s.cancelDependents(ctx, job.ID, "parent terminal failure")
+}
+
+// ReapExpiredLeases locks a batch with SKIP LOCKED, invalidates each dead
+// holder's token and atomically retries or dead-letters the abandoned attempt.
+func (s *Scheduler) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
+	n := 0
+	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		jobs, err := s.jobs.GetExpiredLeasesForUpdate(ctx, limit)
+		if err != nil { return err }
+		for _, job := range jobs {
+			failed, err := s.jobs.ExpireLease(ctx, job.ID, job.FencingToken)
+			if err != nil { return err }
+			workerID := ""
+			if job.LeaseOwner != nil { workerID = *job.LeaseOwner }
+			if err := s.recordTransition(ctx, job.ID, domain.StatusRunning, domain.StatusFailed, workerID, "lease expired"); err != nil { return err }
+			if _, err := s.finishFailure(ctx, failed); err != nil { return err }
+			n++
+		}
+		return nil
+	})
+	if err != nil { return 0, err }
+	return n, nil
+}
+
+func (s *Scheduler) recordTransition(ctx context.Context, id uuid.UUID, from, to domain.JobStatus, workerID, reason string) error {
+	return s.events.Record(ctx, &domain.JobEvent{
+		ID: uuid.New(), JobID: id, FromStatus: from, ToStatus: to,
+		OccurredAt: time.Now().UTC(), WorkerID: strptr(workerID), ErrorMessage: strptr(reason),
+	})
+}
+
+// DispatchReady publishes announcements only. Workers own the atomic claim;
+// duplicate or stale announcements cannot start a second execution.
 func (s *Scheduler) DispatchReady(ctx context.Context, batchSize int) (int, error) {
 	if batchSize <= 0 {
 		batchSize = 100
@@ -221,21 +228,8 @@ func (s *Scheduler) DispatchReady(ctx context.Context, batchSize int) (int, erro
 	}
 	n := 0
 	for _, j := range ready {
-		token, err := s.jobs.IncrementFencingToken(ctx, j.ID)
-		if err != nil {
-			continue
-		}
-		if err := s.jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, token); err != nil {
-			continue
-		}
-		_ = s.events.Record(ctx, &domain.JobEvent{
-			ID: uuid.New(), JobID: j.ID,
-			FromStatus: domain.StatusPending, ToStatus: domain.StatusRunning,
-			OccurredAt: time.Now().UTC(),
-		})
-		if s.bus != nil {
-			_ = s.bus.Publish(ctx, "jobs.execute", mustMarshal(j), j.ID.String())
-		}
+		if s.bus == nil { continue }
+		if err := s.bus.Publish(ctx, "jobs.execute", mustMarshal(j), j.ID.String()); err != nil { return n, err }
 		n++
 	}
 	return n, nil
@@ -252,9 +246,8 @@ func (s *Scheduler) RetryDue(ctx context.Context, limit int) (int, error) {
 	}
 	n := 0
 	for _, j := range due {
-		if err := s.jobs.TransitionStatus(ctx, j.ID, domain.StatusFailed, domain.StatusPending, j.FencingToken); err == nil {
-			n++
-		}
+		if err := s.jobs.TransitionStatus(ctx, j.ID, domain.StatusFailed, domain.StatusPending, j.FencingToken); err != nil { return n, err }
+		n++
 	}
 	return n, nil
 }
@@ -275,37 +268,28 @@ func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error)
 			continue
 		}
 		if err := s.bus.Publish(ctx, e.RoutingKey, e.Payload, e.JobID.String()); err != nil {
-			_ = s.outbox.MarkFailed(ctx, e.ID, err.Error())
+			if markErr := s.outbox.MarkFailed(ctx, e.ID, err.Error()); markErr != nil { return n, markErr }
 			continue
 		}
-		_ = s.outbox.MarkPublished(ctx, e.ID)
+		if err := s.outbox.MarkPublished(ctx, e.ID); err != nil { return n, err }
 		n++
 	}
 	return n, nil
 }
 
-func (s *Scheduler) cancelDependents(ctx context.Context, parentID uuid.UUID, reason string) int {
+func (s *Scheduler) cancelDependents(ctx context.Context, parentID uuid.UUID, reason string) (int, error) {
 	deps, err := s.jobs.GetDependentJobs(ctx, parentID)
-	if err != nil {
-		return 0
-	}
+	if err != nil { return 0, err }
 	n := 0
 	for _, d := range deps {
-		if d.IsTerminal() {
-			continue
-		}
-		if _, err := s.jobs.Cancel(ctx, d.ID); err == nil {
-			n++
-			_ = s.events.Record(ctx, &domain.JobEvent{
-				ID: uuid.New(), JobID: d.ID,
-				FromStatus: d.Status, ToStatus: domain.StatusCancelled,
-				OccurredAt: time.Now().UTC(), ErrorMessage: strptr(reason),
-			})
-			// Recurse one level: transitively cancel grandchildren.
-			n += s.cancelDependents(ctx, d.ID, reason)
-		}
+		if d.IsTerminal() { continue }
+		if _, err := s.jobs.Cancel(ctx, d.ID); err != nil { return 0, err }
+		if err := s.recordTransition(ctx, d.ID, d.Status, domain.StatusCancelled, "", reason); err != nil { return 0, err }
+		children, err := s.cancelDependents(ctx, d.ID, reason)
+		if err != nil { return 0, err }
+		n += 1 + children
 	}
-	return n
+	return n, nil
 }
 
 func mustMarshal(v any) json.RawMessage {

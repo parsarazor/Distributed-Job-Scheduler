@@ -78,6 +78,8 @@ type Job struct {
 	MaxAttempts  int             `json:"max_attempts"`
 	DependsOn    *uuid.UUID      `json:"depends_on,omitempty"`
 	FencingToken int64           `json:"fencing_token"`
+	LeaseOwner *string `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 	ScheduledAt  time.Time       `json:"scheduled_at"`
 	NextRetryAt  *time.Time      `json:"next_retry_at,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
@@ -101,6 +103,10 @@ func (j *Job) IsTerminal() bool {
 func (j *Job) TransitionTo(next JobStatus) error {
 	if err := ValidateTransition(j.Status, next); err != nil {
 		return err
+	}
+	if next != StatusRunning {
+		j.LeaseOwner = nil
+		j.LeaseExpiresAt = nil
 	}
 	j.Status = next
 	j.UpdatedAt = time.Now().UTC()

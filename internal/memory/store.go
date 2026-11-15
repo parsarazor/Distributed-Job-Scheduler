@@ -53,13 +53,58 @@ func NewBundle() *Bundle {
 // Transactor runs multi-repository functions (see WithinTransaction).
 type Transactor struct{ s *shared }
 
-// WithinTransaction executes fn. Each repository operation locks
-// individually, so in-memory "transactions" are safe but not strictly
-// atomic under concurrency (Postgres provides real atomicity via Tx).
-// NOTE: must NOT hold s.mu here: repo methods lock themselves and
-// sync.RWMutex is not reentrant (holding it causes deadlock).
-func (t *Transactor) WithinTransaction(_ context.Context, fn func(ctx context.Context) error) error {
-	return fn(context.Background())
+type txKey struct{}
+type transaction struct {
+	source *shared
+	state *shared
+}
+
+func stateFromCtx(ctx context.Context, s *shared) *shared {
+	if tx, ok := ctx.Value(txKey{}).(*transaction); ok && tx.source == s {
+		return tx.state
+	}
+	return s
+}
+
+// WithinTransaction serializes transactions and commits a private snapshot only
+// on success. Repository calls use the snapshot through the caller's context.
+func (t *Transactor) WithinTransaction(ctx context.Context, fn func(context.Context) error) error {
+	if err := ctx.Err(); err != nil { return err }
+	t.s.mu.Lock()
+	defer t.s.mu.Unlock()
+	state := &shared{
+		jobs: make(map[uuid.UUID]*domain.Job),
+		tenants: make(map[uuid.UUID]*domain.Tenant),
+		events: make(map[uuid.UUID][]*domain.JobEvent),
+		outbox: make(map[uuid.UUID]*domain.OutboxEvent),
+		byAPIKey: make(map[string]uuid.UUID),
+	}
+	for id, j := range t.s.jobs { state.jobs[id] = cloneJob(j) }
+	for id, tenant := range t.s.tenants { cp := *tenant; state.tenants[id] = &cp }
+	for id, events := range t.s.events {
+		for _, event := range events { state.events[id] = append(state.events[id], cloneEvent(event)) }
+	}
+	for id, event := range t.s.outbox { state.outbox[id] = cloneOutbox(event) }
+	for key, id := range t.s.byAPIKey { state.byAPIKey[key] = id }
+	if err := fn(context.WithValue(ctx, txKey{}, &transaction{source: t.s, state: state})); err != nil { return err }
+	if err := ctx.Err(); err != nil { return err }
+	t.s.jobs, t.s.tenants, t.s.events, t.s.outbox, t.s.byAPIKey = state.jobs, state.tenants, state.events, state.outbox, state.byAPIKey
+	return nil
+}
+
+func cloneEvent(e *domain.JobEvent) *domain.JobEvent {
+	cp := *e
+	if e.WorkerID != nil { v := *e.WorkerID; cp.WorkerID = &v }
+	if e.ErrorMessage != nil { v := *e.ErrorMessage; cp.ErrorMessage = &v }
+	return &cp
+}
+
+func cloneOutbox(e *domain.OutboxEvent) *domain.OutboxEvent {
+	cp := *e
+	cp.Payload = append([]byte(nil), e.Payload...)
+	if e.LastError != nil { v := *e.LastError; cp.LastError = &v }
+	if e.PublishedAt != nil { v := *e.PublishedAt; cp.PublishedAt = &v }
+	return &cp
 }
 
 // JobRepo implements repository.JobRepository.
@@ -100,25 +145,29 @@ func cloneJob(j *domain.Job) *domain.Job {
 		t := *j.NextRetryAt
 		cp.NextRetryAt = &t
 	}
+	if j.LeaseOwner != nil { v := *j.LeaseOwner; cp.LeaseOwner = &v }
+	if j.LeaseExpiresAt != nil { v := *j.LeaseExpiresAt; cp.LeaseExpiresAt = &v }
 	return &cp
 }
 
 // --- Jobs ---
 
-func (r *JobRepo) Create(_ context.Context, job *domain.Job) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	if _, exists := r.s.jobs[job.ID]; exists {
+func (r *JobRepo) Create(ctx context.Context, job *domain.Job) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.jobs[job.ID]; exists {
 		return nil // idempotent re-create
 	}
-	r.s.jobs[job.ID] = cloneJob(job)
+	s.jobs[job.ID] = cloneJob(job)
 	return nil
 }
 
-func (r *JobRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.Job, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
-	j, ok := r.s.jobs[id]
+func (r *JobRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	j, ok := s.jobs[id]
 	if !ok {
 		return nil, domain.ErrJobNotFound
 	}
@@ -129,11 +178,12 @@ func (r *JobRepo) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.J
 	return r.GetByID(ctx, id)
 }
 
-func (r *JobRepo) ListByTenant(_ context.Context, tenantID uuid.UUID, filter repository.JobListFilter) ([]*domain.Job, int64, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
+func (r *JobRepo) ListByTenant(ctx context.Context, tenantID uuid.UUID, filter repository.JobListFilter) ([]*domain.Job, int64, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var matched []*domain.Job
-	for _, j := range r.s.jobs {
+	for _, j := range s.jobs {
 		if j.TenantID != tenantID {
 			continue
 		}
@@ -160,10 +210,11 @@ func (r *JobRepo) ListByTenant(_ context.Context, tenantID uuid.UUID, filter rep
 	return matched[start:end], total, nil
 }
 
-func (r *JobRepo) Cancel(_ context.Context, id uuid.UUID) (*domain.Job, error) {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	j, ok := r.s.jobs[id]
+func (r *JobRepo) Cancel(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
 	if !ok {
 		return nil, domain.ErrJobNotFound
 	}
@@ -176,14 +227,15 @@ func (r *JobRepo) Cancel(_ context.Context, id uuid.UUID) (*domain.Job, error) {
 	return cloneJob(j), nil
 }
 
-func (r *JobRepo) TransitionStatus(_ context.Context, id uuid.UUID, from, to domain.JobStatus, fencingToken int64) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	j, ok := r.s.jobs[id]
+func (r *JobRepo) TransitionStatus(ctx context.Context, id uuid.UUID, from, to domain.JobStatus, fencingToken int64) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
 	if !ok {
 		return domain.ErrJobNotFound
 	}
-	if j.FencingToken > fencingToken {
+	if j.FencingToken != fencingToken {
 		return domain.ErrFencingTokenStale
 	}
 	if j.Status != from {
@@ -192,28 +244,33 @@ func (r *JobRepo) TransitionStatus(_ context.Context, id uuid.UUID, from, to dom
 	return j.TransitionTo(to)
 }
 
-func (r *JobRepo) UpdateWithFencingToken(_ context.Context, job *domain.Job, expectedToken int64) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	stored, ok := r.s.jobs[job.ID]
+func (r *JobRepo) UpdateWithFencingToken(ctx context.Context, job *domain.Job, expectedToken int64) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored, ok := s.jobs[job.ID]
 	if !ok {
 		return domain.ErrJobNotFound
 	}
-	if stored.FencingToken > expectedToken {
+	if stored.FencingToken != expectedToken || job.FencingToken != expectedToken {
 		return domain.ErrFencingTokenStale
 	}
-	cp := cloneJob(job)
-	cp.UpdatedAt = time.Now().UTC()
-	r.s.jobs[job.ID] = cp
+	if stored.Status != job.Status { return domain.ErrInvalidTransition }
+	stored.Payload = append([]byte(nil), job.Payload...)
+	stored.AttemptCount = job.AttemptCount
+	stored.MaxAttempts = job.MaxAttempts
+	stored.NextRetryAt = cloneJob(job).NextRetryAt
+	stored.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
-func (r *JobRepo) GetReadyJobs(_ context.Context, limit int) ([]*domain.Job, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
+func (r *JobRepo) GetReadyJobs(ctx context.Context, limit int) ([]*domain.Job, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := time.Now().UTC()
 	var out []*domain.Job
-	for _, j := range r.s.jobs {
+	for _, j := range s.jobs {
 		if j.Status != domain.StatusPending {
 			continue
 		}
@@ -226,7 +283,7 @@ func (r *JobRepo) GetReadyJobs(_ context.Context, limit int) ([]*domain.Job, err
 			continue
 		}
 		if j.DependsOn != nil {
-			parent, ok := r.s.jobs[*j.DependsOn]
+			parent, ok := s.jobs[*j.DependsOn]
 			if !ok || parent.Status != domain.StatusSucceeded {
 				continue
 			}
@@ -245,12 +302,13 @@ func (r *JobRepo) GetReadyJobs(_ context.Context, limit int) ([]*domain.Job, err
 	return out, nil
 }
 
-func (r *JobRepo) GetPendingRetryJobs(_ context.Context, limit int) ([]*domain.Job, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
+func (r *JobRepo) GetPendingRetryJobs(ctx context.Context, limit int) ([]*domain.Job, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := time.Now().UTC()
 	var out []*domain.Job
-	for _, j := range r.s.jobs {
+	for _, j := range s.jobs {
 		if j.Status != domain.StatusFailed {
 			continue
 		}
@@ -271,11 +329,12 @@ func (r *JobRepo) GetPendingRetryJobs(_ context.Context, limit int) ([]*domain.J
 	return out, nil
 }
 
-func (r *JobRepo) GetDependentJobs(_ context.Context, parentJobID uuid.UUID) ([]*domain.Job, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
+func (r *JobRepo) GetDependentJobs(ctx context.Context, parentJobID uuid.UUID) ([]*domain.Job, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var out []*domain.Job
-	for _, j := range r.s.jobs {
+	for _, j := range s.jobs {
 		if j.DependsOn != nil && *j.DependsOn == parentJobID {
 			out = append(out, cloneJob(j))
 		}
@@ -283,32 +342,93 @@ func (r *JobRepo) GetDependentJobs(_ context.Context, parentJobID uuid.UUID) ([]
 	return out, nil
 }
 
-func (r *JobRepo) IncrementFencingToken(_ context.Context, id uuid.UUID) (int64, error) {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	j, ok := r.s.jobs[id]
-	if !ok {
-		return 0, domain.ErrJobNotFound
+func (r *JobRepo) ClaimJob(ctx context.Context, id uuid.UUID, workerID string, ttl time.Duration) (int64, error) {
+	if err := ctx.Err(); err != nil { return 0, err }
+	if workerID == "" || ttl <= 0 { return 0, domain.ErrInvalidLease }
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	now := time.Now().UTC()
+	if !ok || j.Status != domain.StatusPending || j.ScheduledAt.After(now) || (j.NextRetryAt != nil && j.NextRetryAt.After(now)) {
+		return 0, domain.ErrJobNotClaimable
 	}
+	if j.DependsOn != nil {
+		parent := s.jobs[*j.DependsOn]
+		if parent == nil || parent.Status != domain.StatusSucceeded { return 0, domain.ErrJobNotClaimable }
+	}
+	j.Status = domain.StatusRunning
 	j.FencingToken++
-	j.UpdatedAt = time.Now().UTC()
+	j.LeaseOwner = &workerID
+	expires := now.Add(ttl)
+	j.LeaseExpiresAt = &expires
+	j.UpdatedAt = now
 	return j.FencingToken, nil
+}
+
+func (r *JobRepo) RenewLease(ctx context.Context, id uuid.UUID, workerID string, token int64, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil { return err }
+	if workerID == "" || ttl <= 0 { return domain.ErrInvalidLease }
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.jobs[id]
+	now := time.Now().UTC()
+	if j == nil || j.Status != domain.StatusRunning || j.FencingToken != token || j.LeaseOwner == nil || *j.LeaseOwner != workerID || j.LeaseExpiresAt == nil || !j.LeaseExpiresAt.After(now) {
+		return domain.ErrLeaseLost
+	}
+	expires := now.Add(ttl)
+	j.LeaseExpiresAt = &expires
+	j.UpdatedAt = now
+	return nil
+}
+
+func (r *JobRepo) GetExpiredLeasesForUpdate(ctx context.Context, limit int) ([]*domain.Job, error) {
+	if err := ctx.Err(); err != nil { return nil, err }
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 { limit = 100 }
+	now := time.Now().UTC()
+	var out []*domain.Job
+	for _, j := range s.jobs {
+		if j.Status == domain.StatusRunning && j.LeaseExpiresAt != nil && j.LeaseExpiresAt.Before(now) { out = append(out, cloneJob(j)) }
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].LeaseExpiresAt.Before(*out[b].LeaseExpiresAt) })
+	if len(out) > limit { out = out[:limit] }
+	return out, nil
+}
+
+func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*domain.Job, error) {
+	if err := ctx.Err(); err != nil { return nil, err }
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.jobs[id]
+	if j == nil || j.Status != domain.StatusRunning || j.FencingToken != token || j.LeaseExpiresAt == nil || !j.LeaseExpiresAt.Before(time.Now().UTC()) { return nil, domain.ErrLeaseLost }
+	j.FencingToken++
+	j.AttemptCount++
+	if err := j.TransitionTo(domain.StatusFailed); err != nil { return nil, err }
+	return cloneJob(j), nil
 }
 
 // --- Tenants ---
 
-func (r *TenantRepo) Create(_ context.Context, tenant *domain.Tenant) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	r.s.tenants[tenant.ID] = tenant
-	r.s.byAPIKey[tenant.APIKeyHash] = tenant.ID
+func (r *TenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *tenant
+	s.tenants[tenant.ID] = &cp
+	s.byAPIKey[tenant.APIKeyHash] = tenant.ID
 	return nil
 }
 
-func (r *TenantRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
-	t, ok := r.s.tenants[id]
+func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.tenants[id]
 	if !ok {
 		return nil, domain.ErrTenantNotFound
 	}
@@ -316,33 +436,36 @@ func (r *TenantRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.Tenant, e
 	return &cp, nil
 }
 
-func (r *TenantRepo) GetByAPIKeyHash(_ context.Context, apiKeyHash string) (*domain.Tenant, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
-	id, ok := r.s.byAPIKey[apiKeyHash]
+func (r *TenantRepo) GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*domain.Tenant, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.byAPIKey[apiKeyHash]
 	if !ok {
 		return nil, domain.ErrTenantNotFound
 	}
-	t := r.s.tenants[id]
+	t := s.tenants[id]
 	cp := *t
 	return &cp, nil
 }
 
 // --- Events ---
 
-func (r *EventRepo) Record(_ context.Context, event *domain.JobEvent) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	r.s.events[event.JobID] = append(r.s.events[event.JobID], event)
+func (r *EventRepo) Record(ctx context.Context, event *domain.JobEvent) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events[event.JobID] = append(s.events[event.JobID], cloneEvent(event))
 	return nil
 }
 
-func (r *EventRepo) ListByJobID(_ context.Context, jobID uuid.UUID) ([]*domain.JobEvent, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
-	evs := r.s.events[jobID]
+func (r *EventRepo) ListByJobID(ctx context.Context, jobID uuid.UUID) ([]*domain.JobEvent, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	evs := s.events[jobID]
 	out := make([]*domain.JobEvent, len(evs))
-	copy(out, evs)
+	for i, event := range evs { out[i] = cloneEvent(event) }
 	sort.Slice(out, func(a, b int) bool {
 		return out[a].OccurredAt.Before(out[b].OccurredAt)
 	})
@@ -351,28 +474,28 @@ func (r *EventRepo) ListByJobID(_ context.Context, jobID uuid.UUID) ([]*domain.J
 
 // --- Outbox ---
 
-func (r *OutboxRepo) Store(_ context.Context, event *domain.OutboxEvent) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	cp := *event
-	r.s.outbox[event.ID] = &cp
+func (r *OutboxRepo) Store(ctx context.Context, event *domain.OutboxEvent) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.outbox[event.ID]; !exists { s.outbox[event.ID] = cloneOutbox(event) }
 	return nil
 }
 
-func (r *OutboxRepo) FetchUnpublished(_ context.Context, limit int, olderThan time.Duration) ([]*domain.OutboxEvent, error) {
-	r.s.mu.RLock()
-	defer r.s.mu.RUnlock()
+func (r *OutboxRepo) FetchUnpublished(ctx context.Context, limit int, olderThan time.Duration) ([]*domain.OutboxEvent, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	cutoff := time.Now().UTC().Add(-olderThan)
 	var out []*domain.OutboxEvent
-	for _, e := range r.s.outbox {
+	for _, e := range s.outbox {
 		if e.Published || e.ExceededMaxRetries() {
 			continue
 		}
 		if e.CreatedAt.After(cutoff) {
 			continue
 		}
-		cp := *e
-		out = append(out, &cp)
+		out = append(out, cloneOutbox(e))
 	}
 	sort.Slice(out, func(a, b int) bool {
 		return out[a].CreatedAt.Before(out[b].CreatedAt)
@@ -383,10 +506,11 @@ func (r *OutboxRepo) FetchUnpublished(_ context.Context, limit int, olderThan ti
 	return out, nil
 }
 
-func (r *OutboxRepo) MarkPublished(_ context.Context, id uuid.UUID) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	e, ok := r.s.outbox[id]
+func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.outbox[id]
 	if !ok {
 		return nil
 	}
@@ -394,10 +518,11 @@ func (r *OutboxRepo) MarkPublished(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *OutboxRepo) MarkFailed(_ context.Context, id uuid.UUID, lastErr string) error {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
-	e, ok := r.s.outbox[id]
+func (r *OutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, lastErr string) error {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.outbox[id]
 	if !ok {
 		return nil
 	}
@@ -405,16 +530,17 @@ func (r *OutboxRepo) MarkFailed(_ context.Context, id uuid.UUID, lastErr string)
 	return nil
 }
 
-func (r *OutboxRepo) DeletePublished(_ context.Context, olderThan time.Duration) (int64, error) {
-	r.s.mu.Lock()
-	defer r.s.mu.Unlock()
+func (r *OutboxRepo) DeletePublished(ctx context.Context, olderThan time.Duration) (int64, error) {
+	s := stateFromCtx(ctx, r.s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cutoff := time.Now().UTC().Add(-olderThan)
 	var n int64
-	for id, e := range r.s.outbox {
+	for id, e := range s.outbox {
 		if !e.Published || e.PublishedAt == nil || e.PublishedAt.After(cutoff) {
 			continue
 		}
-		delete(r.s.outbox, id)
+		delete(s.outbox, id)
 		n++
 	}
 	return n, nil

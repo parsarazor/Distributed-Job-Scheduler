@@ -54,12 +54,12 @@ func TestContract_FencingTokens(t *testing.T) {
 	j := testJob(uuid.New(), "j", domain.PriorityDefault, time.Now().UTC())
 	_ = b.Jobs.Create(ctx, j)
 
-	tok, err := b.Jobs.IncrementFencingToken(ctx, j.ID)
+	tok, err := b.Jobs.ClaimJob(ctx, j.ID, "w", 30*time.Second)
 	if err != nil || tok != 1 {
 		t.Fatalf("first token must be 1, got %d (%v)", tok, err)
 	}
 	// Stale token (0 < 1) must be rejected on both guarded writes.
-	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, 0); err != domain.ErrFencingTokenStale {
+	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, 0); err != domain.ErrFencingTokenStale {
 		t.Fatalf("stale TransitionStatus must fail, got %v", err)
 	}
 	stored, _ := b.Jobs.GetByID(ctx, j.ID)
@@ -67,7 +67,7 @@ func TestContract_FencingTokens(t *testing.T) {
 		t.Fatalf("stale UpdateWithFencingToken must fail, got %v", err)
 	}
 	// Fresh token proceeds.
-	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, tok); err != nil {
+	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, tok); err != nil {
 		t.Fatalf("fresh transition: %v", err)
 	}
 }

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 )
 
@@ -28,6 +28,15 @@ func seedTenant(t *testing.T, s *Scheduler, b *memory.Bundle) *domain.Tenant {
 		t.Fatal(err)
 	}
 	return tn
+}
+
+func claimTestJob(t *testing.T, s *Scheduler, id uuid.UUID, workerID string) int64 {
+	t.Helper()
+	token, err := s.jobs.ClaimJob(context.Background(), id, workerID, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
 }
 
 func TestSubmitDispatchComplete(t *testing.T) {
@@ -53,10 +62,11 @@ func TestSubmitDispatchComplete(t *testing.T) {
 		t.Fatalf("dispatch=%d want 1", n)
 	}
 	p, _ := s.GetJob(ctx, parent.ID)
-	if p.Status != domain.StatusRunning {
-		t.Fatalf("parent=%s want running", p.Status)
+	if p.Status != domain.StatusPending || p.FencingToken != 0 || p.LeaseOwner != nil || p.LeaseExpiresAt != nil {
+		t.Fatalf("announcement must not claim parent: %+v", p)
 	}
-	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusSucceeded, p.FencingToken, ""); err != nil {
+	token := claimTestJob(t, s, parent.ID, "w")
+	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusSucceeded, token, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := s.DispatchReady(ctx, 10); n != 1 {
@@ -73,10 +83,9 @@ func TestCascadeAbortOnTerminalFailure(t *testing.T) {
 	parent, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "p", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 1, ScheduledAt: time.Now().UTC()})
 	child, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "c", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 1, DependsOn: &parent.ID, ScheduledAt: time.Now().UTC()})
 
-	// Dispatch parent to running, then fail it with attempts exhausted.
-	_, _ = s.DispatchReady(ctx, 10)
-	p, _ := s.GetJob(ctx, parent.ID)
-	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusFailed, p.FencingToken, "boom"); err != nil {
+	// Claim parent, then fail it with attempts exhausted.
+	token := claimTestJob(t, s, parent.ID, "w")
+	if _, err := s.ReportCompletion(ctx, parent.ID, "w", domain.StatusFailed, token, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	p2, _ := s.GetJob(ctx, parent.ID)
@@ -95,14 +104,11 @@ func TestFencingTokenRejectsZombieWrite(t *testing.T) {
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = s.tenants.Create(ctx, tn)
 	job, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-	_, _ = s.DispatchReady(ctx, 10)
-	j, _ := s.GetJob(ctx, job.ID)
-	// Simulate a newer owner bumping the token, then a stale write.
-	if _, err := s.jobs.IncrementFencingToken(ctx, job.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ReportCompletion(ctx, job.ID, "zombie", domain.StatusSucceeded, j.FencingToken, ""); err != domain.ErrFencingTokenStale {
-		t.Fatalf("want ErrFencingTokenStale, got %v", err)
+	token := claimTestJob(t, s, job.ID, "w")
+	for _, stale := range []int64{token - 1, token + 1} {
+		if _, err := s.ReportCompletion(ctx, job.ID, "w", domain.StatusSucceeded, stale, ""); err != domain.ErrFencingTokenStale {
+			t.Fatalf("token %d: want ErrFencingTokenStale, got %v", stale, err)
+		}
 	}
 }
 
@@ -130,7 +136,7 @@ func TestWorkerRunOnce(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
-	w := NewWorker("w1", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("w1", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = b.Tenants.Create(ctx, tn)

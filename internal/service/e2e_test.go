@@ -11,7 +11,6 @@ import (
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 )
 
@@ -25,7 +24,7 @@ func TestE2E_ChainedExecutionThroughWorkers(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), &domain.ConstantBackoff{Delay: time.Millisecond})
-	w := NewWorker("e2e-1", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("e2e-1", s, 4, 30*time.Second)
 	var order atomic.Int32
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		order.Add(1)
@@ -54,7 +53,7 @@ func TestE2E_FlakyHandlerRecovers(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), &domain.ConstantBackoff{Delay: 0})
-	w := NewWorker("e2e-flaky", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("e2e-flaky", s, 4, 30*time.Second)
 	var calls atomic.Int32
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		if calls.Add(1) == 1 {
@@ -89,10 +88,9 @@ func TestE2E_CompetingWorkersSingleExecution(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
-	sharedLeases := lease.NewMemoryLeaseManager()
 	var executions atomic.Int32
 	mkWorker := func(id string) *Worker {
-		w := NewWorker(id, s, sharedLeases, 4)
+		w := NewWorker(id, s, 4, 30*time.Second)
 		w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 			executions.Add(1)
 			time.Sleep(20 * time.Millisecond) // widen the race window
@@ -123,7 +121,7 @@ func TestE2E_TenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
-	w := NewWorker("w", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("w", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 
 	mkTenantJob := func(key string) {

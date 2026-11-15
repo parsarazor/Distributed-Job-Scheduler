@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc"
@@ -44,7 +43,7 @@ func newWiredPair() (*Scheduler, *Worker, *memory.Bundle) {
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
 	s.ReconcileThreshold = 0
-	w := NewWorker("grpc-worker", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("grpc-worker", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 	return s, w, b
 }
@@ -79,6 +78,7 @@ func TestGRPC_SchedulerFullFlow(t *testing.T) {
 	if err != nil || disp.DispatchedCount != 1 {
 		t.Fatalf("dispatch: %+v %v", disp, err)
 	}
+	claimTestJob(t, s, mustParseUUID(t, jobID), "w")
 	stored, _ := s.GetJob(ctx, mustParseUUID(t, jobID))
 	rep, err := sc.ReportJobCompletion(ctx, &apiv1.ReportJobCompletionRequest{JobId: jobID, WorkerId: "w", FinalStatus: apiv1.JobStatus_JOB_STATUS_SUCCEEDED, FencingToken: stored.FencingToken})
 	if err != nil || !rep.Acknowledged {
