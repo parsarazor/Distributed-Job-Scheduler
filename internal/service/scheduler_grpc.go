@@ -294,6 +294,11 @@ func (s *SchedulerServer) ClaimJobExecution(ctx context.Context, req *apiv1.Clai
 	if err != nil {
 		return nil, err
 	}
+	// Record receipt before the dispatch check: canceling a dispatched job
+	// clears dispatched_at, and its announcement must still release the slot.
+	if err := s.sched.outbox.MarkDelivered(ctx, domain.DispatchID(id, int(req.AttemptCount), req.FencingToken)); err != nil {
+		return nil, toGRPCError(err)
+	}
 	// Workers may only claim work the scheduler has announced.
 	stored, err := s.sched.GetJob(ctx, id)
 	if err != nil {

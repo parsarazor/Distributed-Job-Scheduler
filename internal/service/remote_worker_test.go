@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -176,6 +179,39 @@ func TestClaimJobExecution_RejectsUndispatchedJobs(t *testing.T) {
 	}
 	if stored, _ := s.GetJob(context.Background(), job.ID); stored.Status != domain.StatusPending {
 		t.Fatalf("undispatched job changed state: %s", stored.Status)
+	}
+}
+
+type deliveryRecorder struct {
+	repository.OutboxRepository
+	delivered []uuid.UUID
+}
+
+func (r *deliveryRecorder) MarkDelivered(ctx context.Context, id uuid.UUID) error {
+	r.delivered = append(r.delivered, id)
+	return r.OutboxRepository.MarkDelivered(ctx, id)
+}
+
+func TestClaimJobExecution_CanceledAnnouncementReleasesDispatchSlot(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newWiredPair()
+	job, _ := submitAndAnnounce(t, s, "x", `{}`)
+	announced, err := s.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CancelJob(context.Background(), job.ID, "customer changed mind"); err != nil {
+		t.Fatal(err)
+	}
+	rec := &deliveryRecorder{OutboxRepository: s.outbox}
+	s.outbox = rec
+	req := &apiv1.ClaimJobExecutionRequest{JobId: job.ID.String(), AttemptCount: int32(announced.AttemptCount), FencingToken: announced.FencingToken, WorkerId: "w", LeaseTtlMs: 1000}
+	if _, err := dialScheduler(t, s, workerTestKey).ClaimJobExecution(context.Background(), req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("canceled job claimed: %v", err)
+	}
+	want := domain.DispatchID(job.ID, announced.AttemptCount, announced.FencingToken)
+	if len(rec.delivered) != 1 || rec.delivered[0] != want {
+		t.Fatalf("canceled announcement did not release its dispatch slot: %v", rec.delivered)
 	}
 }
 
