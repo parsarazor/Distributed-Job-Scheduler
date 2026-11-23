@@ -157,6 +157,33 @@ func TestContract_RenewAndExpireLease(t *testing.T) {
 	}
 }
 
+func TestContract_ExtendRunningLeasesRevivesLapsedLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := NewBundle()
+	j := testJob(uuid.New(), "lease", domain.PriorityDefault, time.Now().UTC())
+	if err := b.Jobs.Create(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	token, err := b.Jobs.ClaimJob(ctx, j.ID, "owner", time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if n, err := b.Jobs.ExtendRunningLeases(ctx, time.Minute); err != nil || n != 1 {
+		t.Fatalf("extend: n=%d err=%v", n, err)
+	}
+	if expired, _ := b.Jobs.GetExpiredLeasesForUpdate(ctx, 10); len(expired) != 0 {
+		t.Fatalf("extended lease must not be reaped: %v", expired)
+	}
+	if done, err := b.Jobs.CompleteLease(ctx, j.ID, "owner", token, domain.StatusSucceeded); err != nil || done.Status != domain.StatusSucceeded {
+		t.Fatalf("owner must complete after grace: %+v %v", done, err)
+	}
+	if n, _ := b.Jobs.ExtendRunningLeases(ctx, time.Minute); n != 0 {
+		t.Fatalf("finished jobs must not be extended: %d", n)
+	}
+}
+
 func TestContract_ReadyOrderingAndGating(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

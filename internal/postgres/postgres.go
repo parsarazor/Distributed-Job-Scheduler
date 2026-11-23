@@ -608,6 +608,16 @@ func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*
 	return j, err
 }
 
+func (r *JobRepo) ExtendRunningLeases(ctx context.Context, grace time.Duration) (int, error) {
+	tag, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE jobs
+		SET lease_expires_at=clock_timestamp()+make_interval(secs => $1)
+		WHERE status='running' AND lease_expires_at < clock_timestamp()+make_interval(secs => $1)`, grace.Seconds())
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // --- Tenants ---
 
 func (r *TenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {

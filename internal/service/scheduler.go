@@ -375,6 +375,16 @@ func (s *Scheduler) scheduleRetry(ctx context.Context, job *domain.Job) error {
 	return nil
 }
 
+// GrantLeaseGrace runs once at scheduler startup. Workers cannot renew leases
+// while no scheduler is reachable, so leases that lapsed during the outage get
+// grace to be renewed or completed before the reaper re-runs their jobs.
+func (s *Scheduler) GrantLeaseGrace(ctx context.Context, grace time.Duration) (int, error) {
+	if grace <= 0 {
+		return 0, nil
+	}
+	return s.jobs.ExtendRunningLeases(ctx, grace)
+}
+
 // ReapExpiredLeases locks a batch with SKIP LOCKED, invalidates each dead
 // holder's token and atomically retries or dead-letters the abandoned attempt.
 func (s *Scheduler) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {

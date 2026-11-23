@@ -30,9 +30,12 @@ type Deps struct {
 	ReaperInterval time.Duration
 	// DispatchInterval bounds dispatch latency when no wake signal fires.
 	DispatchInterval time.Duration
-	SeedDemo         bool
-	checkSchema      func(context.Context) error
-	serverConfig     *serverConfig
+	// LeaseRestartGrace extends lapsed leases at startup so workers that lost
+	// contact during a scheduler outage can still renew or complete.
+	LeaseRestartGrace time.Duration
+	SeedDemo          bool
+	checkSchema       func(context.Context) error
+	serverConfig      *serverConfig
 }
 
 // NewFromEnv validates configuration before connecting. Only STORAGE=memory
@@ -68,6 +71,10 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		return nil, err
 	}
 	dispatchInterval, err := durationFromEnv("DISPATCH_INTERVAL", 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	leaseRestartGrace, err := durationFromEnv("LEASE_RESTART_GRACE", 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -131,12 +138,14 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	}
 	worker := service.NewWorker(workerID, sched, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)
+	worker.SetCompletionWindow(limits.completionWindow)
 	ops := tx.(repository.Operations)
 	return &Deps{
 		Scheduler: sched, Worker: worker, Broker: bus,
 		Jobs: jobs, Tenants: tenants, Events: events, Outbox: outbox, Tx: tx,
 		Cleanup: cleanup, ReaperInterval: reaperInterval, DispatchInterval: dispatchInterval,
-		Operations: ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,
+		LeaseRestartGrace: leaseRestartGrace,
+		Operations:        ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,
 	}, nil
 }
 
@@ -144,6 +153,8 @@ type workerLimits struct {
 	maxConcurrency int64
 	leaseTTL       time.Duration
 	jobTimeout     time.Duration
+	// completionWindow bounds result retries during a scheduler outage.
+	completionWindow time.Duration
 }
 
 func workerLimitsFromEnv() (workerLimits, error) {
@@ -160,6 +171,9 @@ func workerLimitsFromEnv() (workerLimits, error) {
 		return limits, err
 	}
 	if limits.jobTimeout, err = durationFromEnv("JOB_TIMEOUT", 5*time.Minute); err != nil {
+		return limits, err
+	}
+	if limits.completionWindow, err = durationFromEnv("COMPLETION_RETRY_WINDOW", service.DefaultCompletionWindow); err != nil {
 		return limits, err
 	}
 	return limits, nil

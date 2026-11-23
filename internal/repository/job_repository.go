@@ -108,4 +108,8 @@ type JobRepository interface {
 	// ExpireLease invalidates an expired execution, bumps its token, increments attempts,
 	// clears the lease and transitions running -> failed. Call in the reaper transaction.
 	ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*domain.Job, error)
+
+	// ExtendRunningLeases moves every running lease's expiry to at least
+	// now+grace and returns how many leases changed. Owners and tokens are kept.
+	ExtendRunningLeases(ctx context.Context, grace time.Duration) (int, error)
 }

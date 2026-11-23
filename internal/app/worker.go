@@ -119,6 +119,7 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	control := service.NewRemoteJobControl(scheduler)
 	worker := service.NewRemoteWorker(workerID, control, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)
+	worker.SetCompletionWindow(limits.completionWindow)
 	return &Deps{Worker: worker, Broker: rb, Cleanup: cleanup, checkSchema: schedulerReady, serverConfig: &cfg}, nil
 }
 

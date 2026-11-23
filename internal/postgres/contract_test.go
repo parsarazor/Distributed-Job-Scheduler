@@ -741,3 +741,26 @@ func TestLive_CheckSchemaAtCurrentVersion(t *testing.T) {
 		t.Fatalf("CheckSchema at version %d: %v", SchemaVersion, err)
 	}
 }
+
+func TestLive_ExtendRunningLeasesRevivesLapsedLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	j := liveCreateJob(t, ctx, r, tn.ID, "lapsed")
+	token, err := r.Jobs.ClaimJob(ctx, j.ID, "owner", time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if n, err := r.Jobs.ExtendRunningLeases(ctx, time.Minute); err != nil || n < 1 {
+		t.Fatalf("extend: n=%d err=%v", n, err)
+	}
+	if err := r.Jobs.RenewLease(ctx, j.ID, "owner", token, time.Minute); err != nil {
+		t.Fatalf("owner must renew after grace: %v", err)
+	}
+	if done, err := r.Jobs.CompleteLease(ctx, j.ID, "owner", token, domain.StatusSucceeded); err != nil || done.Status != domain.StatusSucceeded {
+		t.Fatalf("owner must complete after grace: %+v %v", done, err)
+	}
+}

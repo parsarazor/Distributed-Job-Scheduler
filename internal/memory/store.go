@@ -782,6 +782,26 @@ func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*
 	return cloneJob(j), nil
 }
 
+func (r *JobRepo) ExtendRunningLeases(ctx context.Context, grace time.Duration) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return 0, err
+	}
+	defer s.mu.Unlock()
+	until := time.Now().UTC().Add(grace)
+	n := 0
+	for _, j := range s.jobs {
+		if j.Status == domain.StatusRunning && j.LeaseExpiresAt != nil && j.LeaseExpiresAt.Before(until) {
+			j.LeaseExpiresAt = &until
+			n++
+		}
+	}
+	return n, nil
+}
+
 // --- Tenants ---
 
 func (r *TenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
