@@ -21,7 +21,7 @@ import (
 )
 
 // NewServer enables authenticated RPCs, TLS, tracing and bounded RPC sizes.
-func NewServer(deps *Deps, name string) (*grpc.Server, *RuntimeHealth, error) {
+func NewServer(deps *Deps, name string, extra ...grpc.ServerOption) (*grpc.Server, *RuntimeHealth, error) {
 	cfg := deps.serverConfig
 	if cfg == nil {
 		env, err := loadServerConfig(os.Getenv("STORAGE"))
@@ -44,7 +44,7 @@ func NewServer(deps *Deps, name string) (*grpc.Server, *RuntimeHealth, error) {
 	if cfg.tls != nil {
 		options = append(options, grpc.Creds(credentials.NewTLS(cfg.tls)))
 	}
-	srv := grpc.NewServer(options...)
+	srv := grpc.NewServer(append(options, extra...)...)
 	healthpb.RegisterHealthServer(srv, h)
 	return srv, h, nil
 }

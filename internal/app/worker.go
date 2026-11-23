@@ -69,6 +69,8 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		grpc.WithTransportCredentials(transport),
 		grpc.WithPerRPCCredentials(bearerCredential{token: cfg.workerToken, secure: secure}),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		// SCHEDULER_ADDR may resolve to several replicas; spread calls over all of them.
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("configure scheduler client: %w", err)

@@ -1,0 +1,21 @@
+# Two scheduler replicas behind one DNS name. Workers resolve
+# scheduler-pool to both and balance across them (gRPC round_robin).
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+services:
+  scheduler:
+    networks:
+      default:
+        aliases: [scheduler-pool]
+
+  scheduler-2:
+    extends:
+      file: docker-compose.yml
+      service: scheduler
+    ports: !reset []
+    networks:
+      default:
+        aliases: [scheduler-pool]
+
+  worker:
+    environment:
+      SCHEDULER_ADDR: scheduler-pool:50051
