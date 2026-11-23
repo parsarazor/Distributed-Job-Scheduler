@@ -138,6 +138,24 @@ func TestRemoteWorker_FailureSchedulesRetry(t *testing.T) {
 	}
 }
 
+func TestClaimJobExecution_RejectsUndispatchedJobs(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newWiredPair()
+	tn, _ := domain.NewTenant("acme", tenantTestKey)
+	_ = s.tenants.Create(context.Background(), tn)
+	job, err := s.SubmitJob(context.Background(), SubmitInput{TenantID: tn.ID, Name: "x", Payload: json.RawMessage(`{}`), MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &apiv1.ClaimJobExecutionRequest{JobId: job.ID.String(), AttemptCount: int32(job.AttemptCount), FencingToken: job.FencingToken, WorkerId: "w", LeaseTtlMs: 1000}
+	if _, err := dialScheduler(t, s, workerTestKey).ClaimJobExecution(context.Background(), req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("worker claimed a job the scheduler never dispatched: %v", err)
+	}
+	if stored, _ := s.GetJob(context.Background(), job.ID); stored.Status != domain.StatusPending {
+		t.Fatalf("undispatched job changed state: %s", stored.Status)
+	}
+}
+
 func TestWorkerRPCs_RequireWorkerCredentialAndBoundedLease(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newWiredPair()

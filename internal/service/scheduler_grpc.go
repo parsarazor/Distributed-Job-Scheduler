@@ -294,6 +294,14 @@ func (s *SchedulerServer) ClaimJobExecution(ctx context.Context, req *apiv1.Clai
 	if err != nil {
 		return nil, err
 	}
+	// Workers may only claim work the scheduler has announced.
+	stored, err := s.sched.GetJob(ctx, id)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	if stored.DispatchedAt == nil {
+		return nil, status.Error(codes.FailedPrecondition, "job has not been dispatched")
+	}
 	announcement := &domain.Job{ID: id, AttemptCount: int(req.AttemptCount), FencingToken: req.FencingToken}
 	job, token, err := s.sched.ClaimExecution(ctx, announcement, req.WorkerId, ttl)
 	if err != nil {
