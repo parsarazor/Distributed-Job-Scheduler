@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 )
 
 func TestDispatchStagesReadyAttemptsOnceAcrossReplicas(t *testing.T) {
@@ -91,5 +94,53 @@ func TestSubmitRejectsTerminalAndForeignParents(t *testing.T) {
 		if _, err := s.SubmitJob(ctx, SubmitInput{TenantID: tenant.ID, Name: "child", DependsOn: &parent.ID}); err != domain.ErrDependencyNotMet {
 			t.Fatalf("invalid parent accepted: %v", err)
 		}
+	}
+}
+
+func TestDispatchReady_HonorsTenantMaxInFlight(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _, _ := newWiredPair()
+	small, _ := domain.NewTenant("small", "small-key")
+	small.MaxInFlight = 3
+	large, _ := domain.NewTenant("large", "large-key")
+	large.MaxInFlight = 40
+	counts := map[uuid.UUID]int{}
+	for _, tn := range []*domain.Tenant{small, large} {
+		if err := s.tenants.Create(ctx, tn); err != nil {
+			t.Fatal(err)
+		}
+		for range 50 {
+			if _, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "x", MaxAttempts: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	select {
+	case <-s.DispatchWake():
+	default:
+		t.Fatal("submission did not wake the dispatcher")
+	}
+	if n, err := s.DispatchReady(ctx, 1000); err != nil || n != 43 {
+		t.Fatalf("dispatched %d (err=%v), want 3+40", n, err)
+	}
+	select {
+	case <-s.PublishWake():
+	default:
+		t.Fatal("dispatch did not wake the publisher")
+	}
+	for _, tn := range []*domain.Tenant{small, large} {
+		jobs, _, err := s.ListJobs(ctx, tn.ID, repository.JobListFilter{Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range jobs {
+			if j.DispatchedAt != nil {
+				counts[tn.ID]++
+			}
+		}
+	}
+	if counts[small.ID] != 3 || counts[large.ID] != 40 {
+		t.Fatalf("dispatched per tenant small=%d large=%d, want 3 and 40", counts[small.ID], counts[large.ID])
 	}
 }

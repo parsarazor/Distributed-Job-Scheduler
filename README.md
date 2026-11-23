@@ -84,6 +84,7 @@ Everything is env vars, see `internal/app/app.go`:
 | `MAX_CONCURRENCY` | Worker semaphore size | 10 |
 | `LEASE_TTL` | Database lease duration | 30s |
 | `REAPER_INTERVAL` | Expired-lease scan interval | 10s |
+| `DISPATCH_INTERVAL` | Fallback dispatch interval; submissions and completions also trigger dispatch immediately | 2s |
 | `JOB_TIMEOUT` | Worker execution time cap; `timeout_ms` can request a shorter deadline | 5m |
 | `APP_ENV` | `development` explicitly permits local credentials and plaintext gRPC | production behavior |
 | `WORKER_TOKEN` | Bearer credential for `Execute`/`Heartbeat`/`ReportJobCompletion`; at least 32 visible ASCII characters in production | — |

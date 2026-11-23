@@ -30,7 +30,7 @@ func (r *JobRepo) fairReadyJobs(ctx context.Context, limit int) ([]*domain.Job, 
                 UNION ALL
                 SELECT 1 FROM job_outbox o JOIN jobs a ON a.id=o.job_id
                 WHERE a.tenant_id=t.id AND a.status IN ('succeeded','cancelled','dead') AND o.published AND o.delivered_at IS NULL
-            ) credits OFFSET 9)
+            ) credits OFFSET t.max_in_flight-1)
 		ORDER BY t.last_dispatched_at, t.id LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
 		return nil, err
@@ -54,20 +54,20 @@ func (r *JobRepo) fairReadyJobs(ctx context.Context, limit int) ([]*domain.Job, 
 	rows, err = db.Query(ctx, `WITH candidates AS (
 		SELECT j.id, t.tenant_order,
 			row_number() OVER (PARTITION BY t.id ORDER BY j.priority DESC, j.scheduled_at, j.id) AS turn
-		FROM unnest($2::uuid[]) WITH ORDINALITY AS t(id, tenant_order) CROSS JOIN LATERAL (
+		FROM unnest($2::uuid[]) WITH ORDINALITY AS t(id, tenant_order) JOIN tenants tc ON tc.id=t.id CROSS JOIN LATERAL (
 			SELECT j.id, j.priority, j.scheduled_at FROM jobs j
 			WHERE j.tenant_id=t.id AND j.status='pending' AND j.dispatched_at IS NULL
 			AND j.attempt_count < j.max_attempts AND j.scheduled_at <= statement_timestamp()
 			AND (j.next_retry_at IS NULL OR j.next_retry_at <= statement_timestamp())
 			AND (j.depends_on IS NULL OR EXISTS (SELECT 1 FROM jobs p WHERE p.id=j.depends_on AND p.tenant_id=j.tenant_id AND p.status='succeeded'))
 			ORDER BY j.priority DESC, j.scheduled_at, j.id
-			LIMIT LEAST($1, GREATEST(0, 10-(
+			LIMIT LEAST($1, GREATEST(0, tc.max_in_flight-(
 				SELECT count(*) FROM (
                     SELECT 1 FROM jobs a WHERE a.tenant_id=t.id AND a.status IN ('pending','running') AND a.dispatched_at IS NOT NULL
                     UNION ALL
                     SELECT 1 FROM job_outbox o JOIN jobs a ON a.id=o.job_id
                     WHERE a.tenant_id=t.id AND a.status IN ('succeeded','cancelled','dead') AND o.published AND o.delivered_at IS NULL
-                    LIMIT 10
+                    LIMIT tc.max_in_flight
                 ) active)))
 		) j
 	)

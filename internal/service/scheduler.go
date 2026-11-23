@@ -38,6 +38,23 @@ type Scheduler struct {
 	RedispatchAfter time.Duration
 	TenantQuota     int
 	TenantRate      int
+
+	dispatchWake chan struct{}
+	publishWake  chan struct{}
+}
+
+// DispatchWake fires when new work arrives or a dispatch slot frees, so the
+// dispatch loop need not wait for its next tick. Signals are coalesced.
+func (s *Scheduler) DispatchWake() <-chan struct{} { return s.dispatchWake }
+
+// PublishWake fires when dispatch stages outbox announcements.
+func (s *Scheduler) PublishWake() <-chan struct{} { return s.publishWake }
+
+func notifyWake(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
 }
 
 // NewScheduler wires the service. backoff may be nil (defaults applied).
@@ -53,7 +70,8 @@ func NewScheduler(
 	if backoff == nil {
 		backoff = domain.NewDefaultBackoffStrategy()
 	}
-	return &Scheduler{jobs: jobs, tenants: tenants, events: events, outbox: outbox, tx: tx, bus: bus, backoff: backoff, TenantQuota: 1000, TenantRate: 600}
+	return &Scheduler{jobs: jobs, tenants: tenants, events: events, outbox: outbox, tx: tx, bus: bus, backoff: backoff, TenantQuota: 1000, TenantRate: 600,
+		dispatchWake: make(chan struct{}, 1), publishWake: make(chan struct{}, 1)}
 }
 
 // SubmitInput carries validated job-submission fields.
@@ -181,6 +199,7 @@ func (s *Scheduler) SubmitJob(ctx context.Context, in SubmitInput) (*domain.Job,
 	}); err != nil {
 		return nil, err
 	}
+	notifyWake(s.dispatchWake)
 	return job, nil
 }
 
@@ -306,6 +325,7 @@ func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, worke
 	if err != nil {
 		return 0, err
 	}
+	notifyWake(s.dispatchWake)
 	telemetry.Transitions.WithLabelValues(string(final)).Inc()
 	if final == domain.StatusFailed {
 		telemetry.Transitions.WithLabelValues(string(persistedStatus)).Inc()
@@ -392,6 +412,9 @@ func (s *Scheduler) ReapExpiredLeases(ctx context.Context, limit int) (int, erro
 		telemetry.Transitions.WithLabelValues(string(state)).Add(float64(count))
 	}
 	telemetry.Transitions.WithLabelValues("failed").Add(float64(n))
+	if n > 0 {
+		notifyWake(s.dispatchWake)
+	}
 	return n, nil
 }
 
@@ -469,6 +492,9 @@ func (s *Scheduler) DispatchReady(ctx context.Context, batchSize int) (int, erro
 	})
 	if err != nil {
 		return 0, err
+	}
+	if n > 0 {
+		notifyWake(s.publishWake)
 	}
 	return n, nil
 }

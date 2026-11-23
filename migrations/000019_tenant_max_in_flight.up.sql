@@ -1,0 +1,2 @@
+ALTER TABLE tenants ADD COLUMN max_in_flight INTEGER NOT NULL DEFAULT 10
+    CHECK (max_in_flight BETWEEN 1 AND 10000);

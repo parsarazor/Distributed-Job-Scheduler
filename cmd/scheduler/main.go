@@ -79,8 +79,8 @@ func run(ctx context.Context) (runErr error) {
 		return fmt.Errorf("listen for operations HTTP: %w", err)
 	}
 	var loops sync.WaitGroup
-	app.Loop(runCtx, &loops, 2*time.Second, "dispatch", func(ctx context.Context) error { _, err := deps.Scheduler.DispatchReady(ctx, 100); return err })
-	app.Loop(runCtx, &loops, time.Second, "outbox", func(ctx context.Context) error { _, err := deps.Scheduler.ReconcileOutbox(ctx, 100); return err })
+	app.WakeLoop(runCtx, &loops, deps.DispatchInterval, deps.Scheduler.DispatchWake(), "dispatch", func(ctx context.Context) error { _, err := deps.Scheduler.DispatchReady(ctx, 100); return err })
+	app.WakeLoop(runCtx, &loops, time.Second, deps.Scheduler.PublishWake(), "outbox", func(ctx context.Context) error { _, err := deps.Scheduler.ReconcileOutbox(ctx, 100); return err })
 	app.Loop(runCtx, &loops, 10*time.Second, "retry recovery", func(ctx context.Context) error { _, err := deps.Scheduler.RetryDue(ctx, 100); return err })
 	app.Loop(runCtx, &loops, deps.ReaperInterval, "lease reaper", func(ctx context.Context) error { _, err := deps.Scheduler.ReapExpiredLeases(ctx, 100); return err })
 	app.Loop(runCtx, &loops, time.Hour, "retention", func(ctx context.Context) error { return deps.Operations.Prune(ctx, 7*24*time.Hour, 90*24*time.Hour) })
