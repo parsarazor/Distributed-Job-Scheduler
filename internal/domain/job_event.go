@@ -1,10 +1,42 @@
 package domain
 
 import (
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
+
+// SafeHandlerMessages are the fixed execution outcomes allowed in audit output.
+func SafeHandlerMessages() []string {
+	return []string{"handler failed", "handler panicked", "handler canceled", "handler timed out", "handler not registered"}
+}
+
+func SafeHandlerMessage(message string) string {
+	for _, safe := range SafeHandlerMessages() {
+		if safe == message {
+			return safe
+		}
+	}
+	return ""
+}
+
+// AuditText removes control characters and bounds UTF-8 text without cutting a rune.
+func AuditText(value string, limit int) string {
+	var result strings.Builder
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			continue
+		}
+		if result.Len()+utf8.RuneLen(char) > limit {
+			break
+		}
+		result.WriteRune(char)
+	}
+	return result.String()
+}
 
 // JobEvent documents an immutable audit record of a job state transition.
 type JobEvent struct {

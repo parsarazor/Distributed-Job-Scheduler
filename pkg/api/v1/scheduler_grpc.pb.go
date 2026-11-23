@@ -27,6 +27,7 @@ const (
 	SchedulerService_ReportJobCompletion_FullMethodName   = "/v1.SchedulerService/ReportJobCompletion"
 	SchedulerService_Dispatch_FullMethodName              = "/v1.SchedulerService/Dispatch"
 	SchedulerService_TriggerReconciliation_FullMethodName = "/v1.SchedulerService/TriggerReconciliation"
+	SchedulerService_RequeueDeadJob_FullMethodName        = "/v1.SchedulerService/RequeueDeadJob"
 )
 
 // SchedulerServiceClient is the client API for SchedulerService service.
@@ -40,11 +41,11 @@ type SchedulerServiceClient interface {
 	SubmitJob(ctx context.Context, in *SubmitJobRequest, opts ...grpc.CallOption) (*SubmitJobResponse, error)
 	// GetJob retrieves the current state and metadata of a specific job.
 	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*GetJobResponse, error)
-	// ListJobs returns a paginated list of jobs for a tenant with optional filtering.
+	// ListJobs returns metadata only (no payload), with count and byte bounded pages.
 	ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error)
 	// CancelJob cancels a job only if it is currently in PENDING status.
 	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
-	// GetJobEvents returns the audit trail of status transitions for a job.
+	// GetJobEvents returns a bounded chronological page of safe audit metadata.
 	GetJobEvents(ctx context.Context, in *GetJobEventsRequest, opts ...grpc.CallOption) (*GetJobEventsResponse, error)
 	// ReportJobCompletion is invoked when a worker finishes job execution,
 	// resolving any downstream dependent jobs.
@@ -53,6 +54,8 @@ type SchedulerServiceClient interface {
 	Dispatch(ctx context.Context, in *DispatchRequest, opts ...grpc.CallOption) (*DispatchResponse, error)
 	// TriggerReconciliation manually kicks off outbox reconciliation for unpublished jobs.
 	TriggerReconciliation(ctx context.Context, in *TriggerReconciliationRequest, opts ...grpc.CallOption) (*TriggerReconciliationResponse, error)
+	// RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
+	RequeueDeadJob(ctx context.Context, in *RequeueDeadJobRequest, opts ...grpc.CallOption) (*RequeueDeadJobResponse, error)
 }
 
 type schedulerServiceClient struct {
@@ -143,6 +146,16 @@ func (c *schedulerServiceClient) TriggerReconciliation(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *schedulerServiceClient) RequeueDeadJob(ctx context.Context, in *RequeueDeadJobRequest, opts ...grpc.CallOption) (*RequeueDeadJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequeueDeadJobResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_RequeueDeadJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SchedulerServiceServer is the server API for SchedulerService service.
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
@@ -154,11 +167,11 @@ type SchedulerServiceServer interface {
 	SubmitJob(context.Context, *SubmitJobRequest) (*SubmitJobResponse, error)
 	// GetJob retrieves the current state and metadata of a specific job.
 	GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error)
-	// ListJobs returns a paginated list of jobs for a tenant with optional filtering.
+	// ListJobs returns metadata only (no payload), with count and byte bounded pages.
 	ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error)
 	// CancelJob cancels a job only if it is currently in PENDING status.
 	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
-	// GetJobEvents returns the audit trail of status transitions for a job.
+	// GetJobEvents returns a bounded chronological page of safe audit metadata.
 	GetJobEvents(context.Context, *GetJobEventsRequest) (*GetJobEventsResponse, error)
 	// ReportJobCompletion is invoked when a worker finishes job execution,
 	// resolving any downstream dependent jobs.
@@ -167,6 +180,8 @@ type SchedulerServiceServer interface {
 	Dispatch(context.Context, *DispatchRequest) (*DispatchResponse, error)
 	// TriggerReconciliation manually kicks off outbox reconciliation for unpublished jobs.
 	TriggerReconciliation(context.Context, *TriggerReconciliationRequest) (*TriggerReconciliationResponse, error)
+	// RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
+	RequeueDeadJob(context.Context, *RequeueDeadJobRequest) (*RequeueDeadJobResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }
 
@@ -200,6 +215,9 @@ func (UnimplementedSchedulerServiceServer) Dispatch(context.Context, *DispatchRe
 }
 func (UnimplementedSchedulerServiceServer) TriggerReconciliation(context.Context, *TriggerReconciliationRequest) (*TriggerReconciliationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TriggerReconciliation not implemented")
+}
+func (UnimplementedSchedulerServiceServer) RequeueDeadJob(context.Context, *RequeueDeadJobRequest) (*RequeueDeadJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequeueDeadJob not implemented")
 }
 func (UnimplementedSchedulerServiceServer) mustEmbedUnimplementedSchedulerServiceServer() {}
 func (UnimplementedSchedulerServiceServer) testEmbeddedByValue()                          {}
@@ -366,6 +384,24 @@ func _SchedulerService_TriggerReconciliation_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SchedulerService_RequeueDeadJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequeueDeadJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).RequeueDeadJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_RequeueDeadJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).RequeueDeadJob(ctx, req.(*RequeueDeadJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SchedulerService_ServiceDesc is the grpc.ServiceDesc for SchedulerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -404,6 +440,10 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TriggerReconciliation",
 			Handler:    _SchedulerService_TriggerReconciliation_Handler,
+		},
+		{
+			MethodName: "RequeueDeadJob",
+			Handler:    _SchedulerService_RequeueDeadJob_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

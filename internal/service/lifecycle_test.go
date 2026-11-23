@@ -96,7 +96,14 @@ func TestIntegration_ReconcilePublishesIdempotently(t *testing.T) {
 	s, _ := newTestScheduler()
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = s.tenants.Create(ctx, tn)
-	job, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	if _, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.outbox.FetchUnpublished(ctx, 10, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("outbox rows=%v err=%v", rows, err)
+	}
 	s.ReconcileThreshold = 0 // fresh rows eligible immediately (deterministic)
 
 	bus := s.bus.(*broker.MemoryBroker)
@@ -107,7 +114,7 @@ func TestIntegration_ReconcilePublishesIdempotently(t *testing.T) {
 		t.Fatalf("second reconcile=%d want 0 (already published)", n)
 	}
 	msgs := bus.Published()
-	if len(msgs) != 1 || msgs[0].MessageID != job.ID.String() {
+	if len(msgs) != 1 || msgs[0].MessageID != rows[0].ID.String() {
 		t.Fatalf("broker record wrong: %+v", msgs)
 	}
 }

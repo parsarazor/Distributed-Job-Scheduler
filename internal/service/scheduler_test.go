@@ -98,6 +98,27 @@ func TestCascadeAbortOnTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestCancelJobRecordsDistinctEventID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, b := newTestScheduler()
+	tn := seedTenant(t, s, b)
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "cancel", Priority: domain.PriorityDefault, MaxAttempts: 1, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CancelJob(ctx, job.ID, "operator request"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := b.Events.ListByJobID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].ID == job.ID || events[1].ToStatus != domain.StatusCancelled {
+		t.Fatalf("cancel must append a uniquely identified audit event: %+v", events)
+	}
+}
+
 func TestFencingTokenRejectsZombieWrite(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestScheduler()
@@ -112,23 +133,24 @@ func TestFencingTokenRejectsZombieWrite(t *testing.T) {
 	}
 }
 
-func TestOutboxReconcileSkipsAbandoned(t *testing.T) {
+func TestOutboxReconcileRecoversAfterProlongedOutage(t *testing.T) {
 	ctx := context.Background()
 	s, b := newTestScheduler()
 	tn := seedTenant(t, s, b)
-	job, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-	// Force-age the outbox row past the 5s threshold, then fail it to the ceiling.
-	evs, _ := b.Outbox.FetchUnpublished(ctx, 10, 0)
-	if len(evs) == 0 {
-		t.Fatal("want outbox row")
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	_ = job
-	for i := 0; i < domain.MaxOutboxRetries; i++ {
-		_ = b.Outbox.MarkFailed(ctx, evs[0].ID, "down")
+	// A broker outage past the alert threshold must not abandon this attempt.
+	event := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{}`))
+	past := time.Now().Add(-time.Hour)
+	event.CreatedAt, event.NextPublishAt, event.RetryCount = past, &past, domain.MaxOutboxRetries
+	if err := b.Outbox.Store(ctx, event); err != nil {
+		t.Fatal(err)
 	}
-	s.ReconcileThreshold = 0 // prove the skip comes from the ceiling, not age
-	if n, _ := s.ReconcileOutbox(ctx, 10); n != 0 {
-		t.Fatalf("abandoned row must be skipped, reconciled=%d", n)
+	s.ReconcileThreshold = 0
+	if n, _ := s.ReconcileOutbox(ctx, 10); n != 1 {
+		t.Fatalf("outbox must remain retryable after a prolonged outage, reconciled=%d", n)
 	}
 }
 

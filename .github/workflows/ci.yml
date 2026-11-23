@@ -1,0 +1,94 @@
+name: Go CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.26.11'
+          cache: true
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+          if [[ -n "$unformatted" ]]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Race unit tests (Docker-free)
+        run: make test
+      - name: Staticcheck
+        run: make lint
+      - name: Vulnerability check
+        if: ${{ !cancelled() }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.2.0 ./...
+      - name: Validate Buf workspace and verify generated Go code
+        shell: bash
+        run: |
+          tools_dir="$(mktemp -d)"
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-linux-x86_64.zip -o "$tools_dir/protoc.zip"
+          curl -fsSL https://github.com/bufbuild/buf/releases/download/v1.65.0/buf-Linux-x86_64 -o "$tools_dir/buf"
+          (cd "$tools_dir" && sha256sum --check <<'EOF'
+          6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7  protoc.zip
+          c4664232558cee18d2317f17eada659ae7604de53d357199dab054609dab2810  buf
+          EOF
+          )
+          unzip -q "$tools_dir/protoc.zip" -d "$tools_dir/protoc"
+          chmod +x "$tools_dir/buf"
+          export PATH="$tools_dir:$tools_dir/protoc/bin:$PATH"
+          buf build
+          buf lint
+          make proto-tools
+          make proto
+          git diff --exit-code -- pkg/api/v1
+          test -z "$(git ls-files --others --exclude-standard -- pkg/api/v1)"
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.26.11'
+          cache: true
+      - name: Verify Docker is available
+        run: docker info
+      - name: Race live Postgres and RabbitMQ tests with testcontainers
+        run: make test-integration
+
+  deployment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Fresh Compose and legacy Postgres upgrades
+        run: bash .github/scripts/deployment-smoke.sh

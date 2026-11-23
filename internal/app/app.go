@@ -26,12 +26,18 @@ type Deps struct {
 	Events         repository.JobEventRepository
 	Outbox         repository.OutboxRepository
 	Tx             repository.Transactor
+	Operations     repository.Operations
 	ReaperInterval time.Duration
+	SeedDemo       bool
+	checkSchema    func(context.Context) error
+	serverConfig   *serverConfig
 }
 
 // NewFromEnv validates configuration before connecting. Only STORAGE=memory
 // enables the local, process-private bundle; the default requires Postgres/RabbitMQ.
 func NewFromEnv(ctx context.Context) (*Deps, error) {
+	ctx, cancelStartup := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelStartup()
 	storage := os.Getenv("STORAGE")
 	switch storage {
 	case "memory":
@@ -44,10 +50,17 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	default:
 		return nil, fmt.Errorf("unknown STORAGE %q: expected memory or postgres", storage)
 	}
+	if storage == "memory" && os.Getenv("APP_ENV") != "development" {
+		return nil, fmt.Errorf("STORAGE=memory requires APP_ENV=development")
+	}
+	cfg, err := loadServerConfig(storage)
+	if err != nil {
+		return nil, err
+	}
 	maxConcurrency := int64(10)
 	if raw := os.Getenv("MAX_CONCURRENCY"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed <= 0 {
+		if err != nil || parsed <= 0 || parsed > 65535 {
 			return nil, fmt.Errorf("invalid MAX_CONCURRENCY %q", raw)
 		}
 		maxConcurrency = parsed
@@ -60,15 +73,19 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	jobTimeout, err := durationFromEnv("JOB_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
 	var (
-		jobs     repository.JobRepository
-		tenants  repository.TenantRepository
-		events   repository.JobEventRepository
-		outbox   repository.OutboxRepository
-		tx       repository.Transactor
-		bus      broker.Broker
-		cleanups []func()
+		jobs        repository.JobRepository
+		tenants     repository.TenantRepository
+		events      repository.JobEventRepository
+		outbox      repository.OutboxRepository
+		tx          repository.Transactor
+		bus         broker.Broker
+		cleanups    []func()
+		checkSchema func(context.Context) error
 	)
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -81,18 +98,31 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		jobs, tenants, events, outbox, tx = b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx
 		bus = broker.NewMemoryBroker()
 	} else {
-		p, err := postgres.New(ctx, os.Getenv("DATABASE_URL"))
+		pgConfig, err := parseDatabaseConfig(os.Getenv("DATABASE_URL"), cfg.development)
 		if err != nil {
-			return nil, fmt.Errorf("DATABASE_URL: %w", err)
+			return nil, err
+		}
+		rabbitURL := os.Getenv("RABBITMQ_URL")
+		if err := validateRabbitURL(rabbitURL, cfg.development); err != nil {
+			return nil, err
+		}
+		p, err := postgres.NewWithConfig(ctx, pgConfig)
+		if err != nil {
+			return nil, fmt.Errorf("initialize Postgres pool: %w", err)
 		}
 		cleanups = append(cleanups, p.Close)
 		if err := p.Ping(ctx); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("connect Postgres: %w", err)
 		}
+		checkSchema = p.CheckSchema
+		if err := checkSchema(ctx); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("check Postgres schema: %w", err)
+		}
 		repos := postgres.NewRepositories(p)
 		jobs, tenants, events, outbox, tx = repos.Jobs, repos.Tenants, repos.Events, repos.Outbox, repos.Tx
-		rb, err := broker.NewRabbitMQBroker(os.Getenv("RABBITMQ_URL"), "jobs")
+		rb, err := broker.NewRabbitMQBrokerContext(ctx, rabbitURL, "jobs")
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("connect RabbitMQ: %w", err)
@@ -106,10 +136,13 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		workerID = "worker-1"
 	}
 	worker := service.NewWorker(workerID, sched, maxConcurrency, leaseTTL)
+	worker.SetJobTimeout(jobTimeout)
+	ops := tx.(repository.Operations)
 	return &Deps{
 		Scheduler: sched, Worker: worker, Broker: bus,
 		Jobs: jobs, Tenants: tenants, Events: events, Outbox: outbox, Tx: tx,
 		Cleanup: cleanup, ReaperInterval: reaperInterval,
+		Operations: ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,
 	}, nil
 }
 

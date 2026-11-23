@@ -114,7 +114,9 @@ func TestScheduler_ErrorPaths(t *testing.T) {
 		// Leave the job genuinely stuck in failed (e.g. worker crashed after
 		// reporting failure but before recycling): drive the repo directly.
 		token := claimTestJob(t, s, j.ID, "w")
-		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusFailed, token)
+		if _, err := b.Jobs.CompleteLease(ctx, j.ID, "w", token, domain.StatusFailed); err != nil {
+			t.Fatal(err)
+		}
 		stored, _ := b.Jobs.GetByID(ctx, j.ID)
 		past := time.Now().UTC().Add(-time.Second)
 		stored.NextRetryAt = &past

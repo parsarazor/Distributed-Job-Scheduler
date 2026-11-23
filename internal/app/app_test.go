@@ -2,18 +2,19 @@ package app
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 )
 
-// Principle: wiring test. Env-driven backend selection is load-bearing
-// production logic (wrong default = outage); pin the defaults here.
-func TestNewFromEnv_MemoryDefaults(t *testing.T) {
+// Env-driven backend selection is load-bearing production logic, so pin its
+// explicit local mode and fail-fast production defaults here.
+func TestNewFromEnv_ExplicitMemory(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DEMO_SEED", "false")
+	t.Setenv("STORAGE", "memory")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("RABBITMQ_URL", "")
-	t.Setenv("REDIS_ADDR", "")
 	t.Setenv("WORKER_ID", "")
 
 	deps, err := NewFromEnv(context.Background())
@@ -22,13 +23,13 @@ func TestNewFromEnv_MemoryDefaults(t *testing.T) {
 	}
 	defer deps.Cleanup()
 	if _, ok := deps.Jobs.(*memory.JobRepo); !ok {
-		t.Fatalf("default jobs backend must be memory, got %T", deps.Jobs)
+		t.Fatalf("memory jobs backend must be selected, got %T", deps.Jobs)
 	}
 	if _, ok := deps.Tenants.(*memory.TenantRepo); !ok {
-		t.Fatalf("default tenants backend must be memory, got %T", deps.Tenants)
+		t.Fatalf("memory tenants backend must be selected, got %T", deps.Tenants)
 	}
 	if _, ok := deps.Tx.(*memory.Transactor); !ok {
-		t.Fatalf("default transactor must be memory, got %T", deps.Tx)
+		t.Fatalf("memory transactor must be selected, got %T", deps.Tx)
 	}
 	if deps.Worker.ID() != "worker-1" {
 		t.Fatalf("default worker id must be worker-1, got %q", deps.Worker.ID())
@@ -36,12 +37,16 @@ func TestNewFromEnv_MemoryDefaults(t *testing.T) {
 	if deps.Scheduler == nil || deps.Broker == nil {
 		t.Fatal("scheduler and broker must be wired")
 	}
+	if deps.SeedDemo {
+		t.Fatal("demo seeding must be opt in")
+	}
 }
 
 func TestNewFromEnv_WorkerIDOverride(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("STORAGE", "memory")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("RABBITMQ_URL", "")
-	t.Setenv("REDIS_ADDR", "")
 	t.Setenv("WORKER_ID", "edge-7")
 
 	deps, err := NewFromEnv(context.Background())
@@ -55,12 +60,38 @@ func TestNewFromEnv_WorkerIDOverride(t *testing.T) {
 }
 
 func TestNewFromEnv_BadDSNErrors(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("STORAGE", "postgres")
 	t.Setenv("DATABASE_URL", "://not-a-valid-dsn")
-	t.Setenv("RABBITMQ_URL", "")
-	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("RABBITMQ_URL", "amqp://scheduler:scheduler@localhost:5672/")
 	if _, err := NewFromEnv(context.Background()); err == nil {
 		t.Fatal("malformed DATABASE_URL must fail fast, not boot half-wired")
 	}
 }
 
-var _ = os.Getenv
+func TestNewFromEnv_RequiresProductionConfiguration(t *testing.T) {
+	for _, storage := range []string{"", "postgres"} {
+		t.Run(storage, func(t *testing.T) {
+			t.Setenv("STORAGE", storage)
+			t.Setenv("DATABASE_URL", "")
+			t.Setenv("RABBITMQ_URL", "")
+			if _, err := NewFromEnv(context.Background()); err == nil || err.Error() != "DATABASE_URL is required unless STORAGE=memory" {
+				t.Fatalf("missing database URL must fail before connecting, got %v", err)
+			}
+
+			t.Setenv("DATABASE_URL", "postgres://unused")
+			if _, err := NewFromEnv(context.Background()); err == nil || err.Error() != "RABBITMQ_URL is required unless STORAGE=memory" {
+				t.Fatalf("missing RabbitMQ URL must fail before connecting, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNewFromEnv_RejectsUnknownStorage(t *testing.T) {
+	t.Setenv("STORAGE", "other")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("RABBITMQ_URL", "")
+	if _, err := NewFromEnv(context.Background()); err == nil || err.Error() != `unknown STORAGE "other": expected memory or postgres` {
+		t.Fatalf("unknown storage must be rejected, got %v", err)
+	}
+}

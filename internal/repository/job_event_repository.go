@@ -14,4 +14,8 @@ type JobEventRepository interface {
 
 	// ListByJobID returns the chronological audit history of a specific job.
 	ListByJobID(ctx context.Context, jobID uuid.UUID) ([]*domain.JobEvent, error)
+
+	// ListByJobIDPage returns an audit page in chronological order with a stable ID tie breaker.
+	// Limit may include one lookahead row (up to 1001).
+	ListByJobIDPage(ctx context.Context, jobID uuid.UUID, limit, offset int) ([]*domain.JobEvent, error)
 }

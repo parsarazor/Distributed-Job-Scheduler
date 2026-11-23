@@ -14,6 +14,8 @@ type TenantRepository interface {
 
 	// GetByID retrieves a tenant by UUID. Returns domain.ErrTenantNotFound if not found.
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	// Lock serializes submission decisions for one tenant until transaction commit.
+	Lock(ctx context.Context, id uuid.UUID) error
 
 	// GetByAPIKeyHash retrieves a tenant matching a SHA-256 API key hash.
 	// Returns domain.ErrTenantNotFound if no match exists.

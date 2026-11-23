@@ -10,10 +10,10 @@
 
 ---
 
-### ADR 002: Lease-Based Distributed Locking in Redis with Fencing Tokens (Section 4.2)
-* **Decision:** Enforce single-worker execution using Redis distributed leases (`SET lock:job:<id> <worker_id> NX EX 30`) renewed periodically via background goroutine heartbeats, combined with a monotonically increasing `fencing_token` checked at Postgres write time.
-* **Alternative Rejected:** Postgres advisory locks (`pg_advisory_xact_lock`) or un-fenced Redis locks with simple TTL.
-* **Why:** Postgres advisory locks hold open expensive database connection pool slots for the entire duration of long-running user jobs, bottlenecking connection pools. Simple Redis TTL locks fail under GC pauses or network partitions where worker A stalls, its lock expires, worker B picks up the job, and worker A awakens to write stale results. The lease + fencing token pattern provides scalable lock throughput in Redis while guaranteeing zero double-writes in Postgres via conditional `UPDATE jobs ... WHERE fencing_token = :token`.
+### ADR 002: Postgres Job Leases with Fencing Tokens (Section 4.2)
+* **Decision:** Enforce single-worker execution with an atomic Postgres claim that changes a ready job from pending to running, increments its fencing token, and records owner and expiry. Workers renew the row lease; a scheduler reaper expires abandoned jobs under `FOR UPDATE SKIP LOCKED`.
+* **Alternative Rejected:** Postgres advisory locks held for the duration of handler execution, and separate Redis lease/fencing state.
+* **Why:** Claims, lease ownership, and fencing must share one source of truth. Exact-token conditional writes reject stale workers even after lease expiry, while short row locks are held only during claim, renewal, completion, or reaping, not while user code runs.
 
 ---
 
@@ -39,35 +39,35 @@
 ---
 
 ### ADR 006: Message Broker Selection: RabbitMQ Work Queues (Section 3 & Section 7 #2)
-* **Decision:** Use RabbitMQ as the message broker utilizing native work-queue semantics (competing consumers, per-message AMQP `basic.ack`/`basic.nack`, dead-letter exchanges, and prefetch limits).
+* **Decision:** Use RabbitMQ as the message broker utilizing native work-queue semantics (competing consumers, per-message AMQP `basic.ack`/`basic.nack`, confirmed poison-message quarantine, and prefetch limits).
 * **Alternative Rejected:** Apache Kafka.
-* **Why:** Kafka is a distributed append-only log designed for stream processing, high-throughput analytics, and partition-ordered replays; it requires manual partition rebalancing, static consumer groups, and complex consumer-side head-of-line blocking workarounds for retries. RabbitMQ natively supports independent task distribution, individual message acknowledgments, dead-letter exchanges for poisoned jobs, and queue-based backpressure, perfectly matching asynchronous task-queue semantics.
+* **Why:** Kafka is a distributed append-only log designed for stream processing, high-throughput analytics, and partition-ordered replays; it requires manual partition rebalancing, static consumer groups, and complex consumer-side head-of-line blocking workarounds for retries. RabbitMQ natively supports independent task distribution, individual message acknowledgments, persistent quarantine for poisoned jobs, and queue-based backpressure, perfectly matching asynchronous task-queue semantics.
 
 ---
 
 ### ADR 007: Transactional Outbox Pattern for Zero Message Loss (Section 7 #2 & #3)
-* **Decision:** Implement the Transactional Outbox pattern where job metadata, audit events, and an `outbox` record are written to PostgreSQL inside a single database transaction; an asynchronous dispatcher publishes outbox records to RabbitMQ and marks them published.
+* **Decision:** Submission commits job metadata and an audit event. Ready dispatch commits an outbox record and a per-attempt dispatch marker under row locks. Only the outbox publisher sends to RabbitMQ and marks rows published after confirmation.
 * **Alternative Rejected:** Direct inline publishing to RabbitMQ within the HTTP/gRPC request handler after or before the database write.
 * **Why:** Dual-write problems are unavoidable with direct publishing: if DB commit succeeds but broker connection drops, the job is permanently lost; if broker publish succeeds but DB commit fails, the worker executes a non-existent phantom job. The transactional outbox guarantees that any job acknowledged to the client is durably committed to disk, guaranteeing at-least-once dispatch.
 
 ---
 
 ### ADR 008: Periodic Outbox Reconciliation Engine (Section 7 #3)
-* **Decision:** Run a background reconciliation ticker in the Scheduler that polls `SELECT ... FROM job_outbox WHERE published = FALSE AND created_at < NOW() - INTERVAL '5s' FOR UPDATE SKIP LOCKED` and republishes stranded messages to RabbitMQ.
+* **Decision:** Poll unpublished outbox rows with `FOR UPDATE SKIP LOCKED` inside an explicit transaction that remains open through broker confirmation and the published marker. Each pass is bounded to 15 seconds, each row transaction to four seconds, and confirmation to two seconds. Commit progress per row. Failed rows retry indefinitely with 1–256 second backoff; ten failures emit a diagnostic log and every failure increments a metric.
 * **Alternative Rejected:** Distributed 2-Phase Commit (XA) or relying entirely on real-time event listeners (e.g. Postgres LISTEN/NOTIFY).
 * **Why:** Two-Phase Commit is notoriously fragile, slow, and unsupported across heterogeneous systems like Postgres and RabbitMQ. Real-time notifications can drop events during broker blips or scheduler restarts. A periodic polling worker with `FOR UPDATE SKIP LOCKED` provides robust, non-blocking, self-healing recovery for any message abandoned during unexpected process crashes.
 
 ---
 
 ### ADR 009: Fencing Token Edge-Case Protection for GC Pauses (Section 7 #1 & #4)
-* **Decision:** Incorporate a monotonically increasing `fencing_token` into the `jobs` schema and distributed lease contract; state updates to terminal statuses require `WHERE fencing_token = :held_token`.
-* **Alternative Rejected:** Trusting Redis lock expiration and assuming the worker will never run past the lock TTL.
-* **Why:** In distributed systems, stop-the-world garbage collection pauses, unexpected network delays, or VM CPU throttling can exceed the lock TTL. If Worker A loses its lease and Worker B assumes ownership, Worker A must not be allowed to overwrite Worker B's progress. Conditioning database updates on the fencing token guarantees that late-arriving writes from zombie workers fail harmlessly.
+* **Decision:** Increment the `jobs.fencing_token` on each Postgres claim and require exact token equality for every execution-fenced write. Expiring a lease increments the token again before retrying or dead-lettering the job.
+* **Alternative Rejected:** Trusting lease expiration and assuming the worker will never run past its TTL.
+* **Why:** Garbage-collection pauses, network delays, and VM throttling can exceed the lease TTL. If a worker loses its lease, its late completion and renewal writes must fail even before a later worker claims the job. Exact database token checks enforce that invariant.
 
 ---
 
 ### ADR 010: Cascading Dependency Failure and Deadlock Prevention Policy (Section 7 #5)
-* **Decision:** When parent Job A completes: if A succeeds, dependent Job B is transitioned to `pending` and pushed to the outbox; if parent Job A reaches a terminal failure (`dead` or `cancelled`), dependent Job B is automatically transitioned to `cancelled` with an audit event explaining the parent failure.
+* **Decision:** When parent Job A succeeds, its pending dependents become eligible for the next ready dispatch. If A reaches `dead` or `cancelled`, pending descendants are cancelled atomically with audit events. Child submission locks the parent and rejects terminal failures and cross-tenant dependencies.
 * **Alternative Rejected:** Leaving dependent jobs in `pending` indefinitely, or polling parent state in the worker loop.
 * **Why:** Without a cascade-abort policy, downstream dependent jobs become zombies that tie up scheduler queries and confuse API consumers. Automatic cancellation upon parent failure provides fast feedback to clients and eliminates distributed deadlock without requiring polling overhead.
 
@@ -76,4 +76,13 @@
 ### ADR 011: Idempotent Scheduler Dispatch across Crashes (Section 7 #6)
 * **Decision:** Make the dispatch engine idempotent by combining the outbox's `published` boolean flag with a database transaction: a restarted scheduler simply re-reads unpublished outbox records and marks them published only upon receiving an AMQP publisher confirmation.
 * **Alternative Rejected:** Storing ephemeral in-memory queues or relying on broker-side deduplication.
-* **Why:** Scheduler crashes can occur immediately before or after message dispatch. Relying on database-backed delivery tracking combined with idempotent message identifiers (`job_id` as RabbitMQ `message_id`) ensures the broker and worker deduplicate re-deliveries, preserving at-least-once delivery with zero job loss.
+* **Why:** Crashes between confirmation and commit can duplicate announcements. AMQP `message_id` is the outbox event UUID and does not itself deduplicate deliveries. Workers compare the announced attempt and fencing token before atomically claiming. Handlers receive `job.IdempotencyKey()` for downstream attempt deduplication and must use a job-scoped key when effects must be unique across retries.
+
+### ADR 012: Tenant admission and fair dispatch
+Submission locks the tenant row before checking idempotency, outstanding quota and rolling submission rate. A unique partial index enforces `(tenant_id, submission_key)`. Dispatch locks tenant rows using `SKIP LOCKED`, orders by persisted last-dispatch time and selects one job per tenant per round. Ten outstanding dispatched jobs per tenant bound broker backlog. Tenant bearer credentials determine API scope; worker execution/control and scheduler administration use distinct deployment credentials. TLS is required outside explicit local development.
+
+
+### ADR 013: Bounded API and recovery contracts
+List jobs as metadata and paginate audit events within a 1 MiB response budget. Publish only identity/trace announcements to the exact execution queue. A five-minute broker TTL and generation-fenced redispatch recover confirmed but unclaimed attempts. Cancellation retires unsent announcements and retains credits for queued messages until receipt or expiry. Permanent poison messages are confirmed in a durable quarantine queue before acknowledgement, and transient failures back off before requeue.
+
+Handlers receive only trace context and canonical stored input. Worker renewal, cancellation and completion share context-aware admission; cancellation cannot revive timed-out work or claim a successful final outcome was aborted. Bounded shutdown leaves unfinished leases to the reaper. Retention scrubs terminal payloads/trace context after 90 days while preserving submission fingerprints and rejecting requeue of expired input.

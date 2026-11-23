@@ -32,6 +32,7 @@ message Job {
   string tenant_id = 2;
   string name = 3;
   JobStatus status = 4;
+  // Omitted by ListJobs; retrieve payload with GetJob.
   bytes payload = 5;
   JobPriority priority = 6;
   int32 attempt_count = 7;
@@ -42,6 +43,10 @@ message Job {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   int64 fencing_token = 14;
+  int64 timeout_ms = 15;
+  string idempotency_key = 16;
+  // Terminal payload retention has removed the executable input.
+  bool payload_expired = 17;
 }
 
 // JobEvent records status transitions for audit trailing.
@@ -52,5 +57,6 @@ message JobEvent {
   JobStatus to_status = 4;
   google.protobuf.Timestamp occurred_at = 5;
   string worker_id = 6;
+  // A safe execution-result category; arbitrary handler error text is omitted.
   string message = 7;
 }

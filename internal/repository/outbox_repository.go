@@ -17,11 +17,20 @@ type OutboxRepository interface {
 	// using SELECT ... FOR UPDATE SKIP LOCKED to prevent duplicate processor pickups.
 	FetchUnpublished(ctx context.Context, limit int, olderThan time.Duration) ([]*domain.OutboxEvent, error)
 
+	// FetchPublishable locks a single due row, excluding failed transactions from the current pass.
+	FetchPublishable(ctx context.Context, olderThan time.Duration, exclude []uuid.UUID) (*domain.OutboxEvent, error)
+
 	// MarkPublished flags the message as successfully published to RabbitMQ.
 	MarkPublished(ctx context.Context, id uuid.UUID) error
 
 	// MarkFailed records an error and increments the retry count for an outbox message.
 	MarkFailed(ctx context.Context, id uuid.UUID, lastErr string) error
+
+	// MarkDelivered releases this generation's queued-delivery credit.
+	MarkDelivered(ctx context.Context, id uuid.UUID) error
+
+	// RetireUnpublished prevents canceled work from entering the broker.
+	RetireUnpublished(ctx context.Context, jobID uuid.UUID) error
 
 	// DeletePublished purges acknowledged outbox rows older than the specified duration.
 	DeletePublished(ctx context.Context, olderThan time.Duration) (int64, error)

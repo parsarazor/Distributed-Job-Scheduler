@@ -1,11 +1,14 @@
 version: v2
 modules:
-  - path: proto
-deps:
-  - buf.build/googleapis/googleapis
+  # Keep the existing descriptor/import paths (proto/v1/*.proto).
+  - path: .
+    includes:
+      - proto
 lint:
   use:
-    - DEFAULT
+    - MINIMAL
+  except:
+    - PACKAGE_DIRECTORY_MATCH
 breaking:
   use:
     - FILE

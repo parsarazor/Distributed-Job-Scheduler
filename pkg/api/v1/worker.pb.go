@@ -451,9 +451,11 @@ func (x *GetWorkerStatusResponse) GetActiveJobs() []*ActiveJobInfo {
 }
 
 type CancelExecutionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	JobId  string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Reason string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Required execution identity; zero and stale tokens never cancel work.
+	FencingToken  int64 `protobuf:"varint,3,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -500,6 +502,13 @@ func (x *CancelExecutionRequest) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *CancelExecutionRequest) GetFencingToken() int64 {
+	if x != nil {
+		return x.FencingToken
+	}
+	return 0
 }
 
 type CancelExecutionResponse struct {
@@ -686,10 +695,11 @@ const file_proto_v1_worker_proto_rawDesc = "" +
 	"\vis_draining\x18\x06 \x01(\bR\n" +
 	"isDraining\x122\n" +
 	"\vactive_jobs\x18\a \x03(\v2\x11.v1.ActiveJobInfoR\n" +
-	"activeJobs\"G\n" +
+	"activeJobs\"l\n" +
 	"\x16CancelExecutionRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"Q\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12#\n" +
+	"\rfencing_token\x18\x03 \x01(\x03R\ffencingToken\"Q\n" +
 	"\x17CancelExecutionResponse\x12\x1c\n" +
 	"\tcancelled\x18\x01 \x01(\bR\tcancelled\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"=\n" +

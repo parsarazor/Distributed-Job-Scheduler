@@ -76,7 +76,7 @@ func TestContract_PendingRetryQuery(t *testing.T) {
 	due := testJob(tenant, "due", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, due)
 	_, _ = b.Jobs.ClaimJob(ctx, due.ID, "w", 30*time.Second)
-	_ = b.Jobs.TransitionStatus(ctx, due.ID, domain.StatusRunning, domain.StatusFailed, 1)
+	_, _ = b.Jobs.CompleteLease(ctx, due.ID, "w", 1, domain.StatusFailed)
 	stored, _ := b.Jobs.GetByID(ctx, due.ID)
 	stored.NextRetryAt = &past // attempts 0 < 3
 	_ = b.Jobs.UpdateWithFencingToken(ctx, stored, stored.FencingToken)
@@ -84,7 +84,7 @@ func TestContract_PendingRetryQuery(t *testing.T) {
 	waiting := testJob(tenant, "waiting", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, waiting)
 	_, _ = b.Jobs.ClaimJob(ctx, waiting.ID, "w", 30*time.Second)
-	_ = b.Jobs.TransitionStatus(ctx, waiting.ID, domain.StatusRunning, domain.StatusFailed, 1)
+	_, _ = b.Jobs.CompleteLease(ctx, waiting.ID, "w", 1, domain.StatusFailed)
 	stored2, _ := b.Jobs.GetByID(ctx, waiting.ID)
 	stored2.NextRetryAt = &future
 	_ = b.Jobs.UpdateWithFencingToken(ctx, stored2, stored2.FencingToken)
@@ -92,7 +92,7 @@ func TestContract_PendingRetryQuery(t *testing.T) {
 	exhausted := testJob(tenant, "exhausted", domain.PriorityDefault, past)
 	_ = b.Jobs.Create(ctx, exhausted)
 	_, _ = b.Jobs.ClaimJob(ctx, exhausted.ID, "w", 30*time.Second)
-	_ = b.Jobs.TransitionStatus(ctx, exhausted.ID, domain.StatusRunning, domain.StatusFailed, 1)
+	_, _ = b.Jobs.CompleteLease(ctx, exhausted.ID, "w", 1, domain.StatusFailed)
 	stored3, _ := b.Jobs.GetByID(ctx, exhausted.ID)
 	stored3.NextRetryAt = &past
 	stored3.AttemptCount = stored3.MaxAttempts
@@ -102,8 +102,8 @@ func TestContract_PendingRetryQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != due.ID {
-		t.Fatalf("only the due job qualifies, got %d", len(got))
+	if len(got) != 2 || got[0].ID == waiting.ID || got[1].ID == waiting.ID {
+		t.Fatalf("due and exhausted jobs qualify, got %v", got)
 	}
 	if _, err := b.Jobs.GetPendingRetryJobs(ctx, 0); err != nil {
 		t.Fatalf("limit 0 must still work: %v", err)

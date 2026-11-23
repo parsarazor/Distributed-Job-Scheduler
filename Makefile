@@ -1,29 +1,33 @@
-.PHONY: build test vet proto migrate lint run-scheduler run-worker demo
+.PHONY: build test test-integration vet proto proto-tools migrate lint run-scheduler run-worker demo
 
 build:
 	go build ./...
 
 test:
-	go test ./... -count=1 -cover
+	env -u DATABASE_URL -u INTEGRATION go test -race ./... -count=1 -cover
+
+test-integration:
+	env -u DATABASE_URL -u TEST_POSTGRES_DSN -u TEST_RABBITMQ_URL INTEGRATION=1 go test -race ./internal/postgres ./internal/integration -count=1 -timeout=15m
 
 vet:
 	go vet ./...
 
+proto-tools:
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
 proto:
+	@test "$$(protoc --version)" = "libprotoc 35.1" || { printf '%s\n' 'Install protoc 35.1 to regenerate protobufs.'; exit 1; }
 	export PATH="$$PATH:$$(go env GOPATH)/bin" && \
-	mkdir -p pkg/api/v1 && \
-	protoc -I. -I/opt/homebrew/include \
-	  --go_out=pkg/api/v1 --go_opt=paths=source_relative \
-	  --go-grpc_out=pkg/api/v1 --go-grpc_opt=paths=source_relative \
-	  proto/v1/job.proto proto/v1/scheduler.proto proto/v1/worker.proto && \
-	mkdir -p /tmp/proto-stage && mv pkg/api/v1/*.go /tmp/proto-stage/ 2>/dev/null || true; \
-	if [ -d pkg/api/v1/proto ]; then mv pkg/api/v1/proto/v1/*.go pkg/api/v1/ && rm -rf pkg/api/v1/proto; fi
+	protoc -I. --go_out=. --go_opt=module=github.com/prsamohamadi/distributed-job-scheduler \
+	  --go-grpc_out=. --go-grpc_opt=module=github.com/prsamohamadi/distributed-job-scheduler \
+	  proto/v1/job.proto proto/v1/scheduler.proto proto/v1/worker.proto
 
 migrate:
 	migrate -path ./migrations -database "$${DATABASE_URL}" up
 
 lint:
-	golangci-lint run ./... || staticcheck ./...
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
 run-scheduler:
 	go run ./cmd/scheduler

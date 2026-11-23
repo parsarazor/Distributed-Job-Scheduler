@@ -58,17 +58,102 @@ func TestContract_FencingTokens(t *testing.T) {
 	if err != nil || tok != 1 {
 		t.Fatalf("first token must be 1, got %d (%v)", tok, err)
 	}
-	// Stale token (0 < 1) must be rejected on both guarded writes.
-	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, 0); err != domain.ErrFencingTokenStale {
-		t.Fatalf("stale TransitionStatus must fail, got %v", err)
+	for _, token := range []int64{tok - 1, tok + 1} {
+		if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, token); err != domain.ErrFencingTokenStale {
+			t.Fatalf("transition with token %d must fail, got %v", token, err)
+		}
+		stored, _ := b.Jobs.GetByID(ctx, j.ID)
+		stored.FencingToken = token
+		if err := b.Jobs.UpdateWithFencingToken(ctx, stored, token); err != domain.ErrFencingTokenStale {
+			t.Fatalf("attempt update with token %d must fail, got %v", token, err)
+		}
+		if err := b.Jobs.RenewLease(ctx, j.ID, "w", token, time.Minute); err != domain.ErrLeaseLost {
+			t.Fatalf("renewal with token %d must fail, got %v", token, err)
+		}
 	}
-	stored, _ := b.Jobs.GetByID(ctx, j.ID)
-	if err := b.Jobs.UpdateWithFencingToken(ctx, stored, 0); err != domain.ErrFencingTokenStale {
-		t.Fatalf("stale UpdateWithFencingToken must fail, got %v", err)
+	// Even the current token cannot bypass the dedicated lease operations.
+	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, tok); err != domain.ErrLeaseLost {
+		t.Fatalf("generic running transition must fail: %v", err)
 	}
-	// Fresh token proceeds.
-	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusSucceeded, tok); err != nil {
-		t.Fatalf("fresh transition: %v", err)
+	running, _ := b.Jobs.GetByID(ctx, j.ID)
+	if err := b.Jobs.UpdateWithFencingToken(ctx, running, tok); err != domain.ErrLeaseLost {
+		t.Fatalf("generic running update must fail: %v", err)
+	}
+	if _, err := b.Jobs.CompleteLease(ctx, j.ID, "w", tok, domain.StatusSucceeded); err != nil {
+		t.Fatalf("complete live lease: %v", err)
+	}
+	completed, err := b.Jobs.GetByID(ctx, j.ID)
+	if err != nil || completed.LeaseOwner != nil || completed.LeaseExpiresAt != nil {
+		t.Fatalf("completion must clear the lease: job=%+v err=%v", completed, err)
+	}
+}
+
+func TestContract_ConcurrentClaimsMintOneToken(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := NewBundle()
+	j := testJob(uuid.New(), "claim-race", domain.PriorityDefault, time.Now().UTC())
+	if err := b.Jobs.Create(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		token int64
+		err   error
+	}
+	results := make(chan result, 2)
+	for _, workerID := range []string{"worker-a", "worker-b"} {
+		go func(workerID string) {
+			token, err := b.Jobs.ClaimJob(ctx, j.ID, workerID, time.Minute)
+			results <- result{token: token, err: err}
+		}(workerID)
+	}
+	first, second := <-results, <-results
+	if (first.err == nil) == (second.err == nil) {
+		t.Fatalf("exactly one claim must succeed: first=%+v second=%+v", first, second)
+	}
+	winner := first
+	loser := second
+	if second.err == nil {
+		winner, loser = second, first
+	}
+	if winner.token != 1 || loser.err != domain.ErrJobNotClaimable {
+		t.Fatalf("single claim must mint token 1: winner=%+v loser=%+v", winner, loser)
+	}
+}
+
+func TestContract_RenewAndExpireLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := NewBundle()
+	j := testJob(uuid.New(), "lease", domain.PriorityDefault, time.Now().UTC())
+	if err := b.Jobs.Create(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	token, err := b.Jobs.ClaimJob(ctx, j.ID, "owner", time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Jobs.RenewLease(ctx, j.ID, "stale-owner", token, time.Minute); err != domain.ErrLeaseLost {
+		t.Fatalf("wrong owner must not renew, got %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := b.Jobs.RenewLease(ctx, j.ID, "owner", token, time.Minute); err != domain.ErrLeaseLost {
+		t.Fatalf("expired lease must not be revived, got %v", err)
+	}
+	expired, err := b.Jobs.GetExpiredLeasesForUpdate(ctx, 10)
+	if err != nil || len(expired) != 1 || expired[0].ID != j.ID {
+		t.Fatalf("expired lease query: jobs=%v err=%v", expired, err)
+	}
+	failed, err := b.Jobs.ExpireLease(ctx, j.ID, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.FencingToken != token+1 || failed.AttemptCount != 1 || failed.Status != domain.StatusFailed || failed.LeaseOwner != nil || failed.LeaseExpiresAt != nil {
+		t.Fatalf("expiration must invalidate holder and clear lease: %+v", failed)
+	}
+	if err := b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusFailed, domain.StatusPending, token); err != domain.ErrFencingTokenStale {
+		t.Fatalf("old token must remain stale after expiration, got %v", err)
 	}
 }
 
@@ -142,12 +227,12 @@ func TestContract_OutboxLifecycle(t *testing.T) {
 	if got, _ := b.Outbox.FetchUnpublished(ctx, 10, 0); len(got) != 1 {
 		t.Fatalf("aged row must be fetched, got %d", len(got))
 	}
-	// Failure bumps the counter; the ceiling removes the poison row.
+	// Failure bumps the counter without abandoning durable work.
 	for i := 0; i < domain.MaxOutboxRetries; i++ {
 		_ = b.Outbox.MarkFailed(ctx, e.ID, "broker down")
 	}
-	if got, _ := b.Outbox.FetchUnpublished(ctx, 10, 0); len(got) != 0 {
-		t.Fatalf("abandoned row must be skipped, got %d", len(got))
+	if got, _ := b.Outbox.FetchUnpublished(ctx, 10, 0); len(got) != 1 {
+		t.Fatalf("outbox must remain retryable after repeated failures, got %d", len(got))
 	}
 	// Publish + purge path.
 	e2 := domain.NewOutboxEvent(uuid.New(), "k", nil)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,7 +92,6 @@ func TestE2E_CompetingWorkersSingleExecution(t *testing.T) {
 		w := NewWorker(id, s, 4, 30*time.Second)
 		w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 			executions.Add(1)
-			time.Sleep(20 * time.Millisecond) // widen the race window
 			return nil
 		})
 		return w
@@ -101,16 +99,44 @@ func TestE2E_CompetingWorkersSingleExecution(t *testing.T) {
 	w1, w2 := mkWorker("w1"), mkWorker("w2")
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = b.Tenants.Create(ctx, tn)
-	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-
-	var wg sync.WaitGroup
-	for _, w := range []*Worker{w1, w2} {
-		wg.Add(1)
-		go func(w *Worker) { defer wg.Done(); _, _ = w.RunOnce(ctx, 10) }(w)
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
+
+	start := make(chan struct{})
+	type result struct {
+		ran bool
+		err error
+	}
+	results := make(chan result, 2)
+	for _, w := range []*Worker{w1, w2} {
+		go func(w *Worker) {
+			<-start
+			ran, err := w.execute(ctx, job)
+			results <- result{ran: ran, err: err}
+		}(w)
+	}
+	close(start)
+	ran := 0
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if r.ran {
+			ran++
+		}
+	}
+	if ran != 1 {
+		t.Fatalf("exactly one worker must win the claim, got %d", ran)
+	}
 	if got := executions.Load(); got != 1 {
 		t.Fatalf("exactly one execution required, got %d", got)
+	}
+	stored, err := s.GetJob(ctx, job.ID)
+	if err != nil || stored.Status != domain.StatusSucceeded || stored.FencingToken != 1 {
+		t.Fatalf("claim must increment token once: job=%+v err=%v", stored, err)
 	}
 }
 

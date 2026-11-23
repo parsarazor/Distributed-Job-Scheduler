@@ -71,6 +71,8 @@ message GetWorkerStatusResponse {
 message CancelExecutionRequest {
   string job_id = 1;
   string reason = 2;
+  // Required execution identity; zero and stale tokens never cancel work.
+  int64 fencing_token = 3;
 }
 
 message CancelExecutionResponse {

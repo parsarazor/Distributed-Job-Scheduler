@@ -46,14 +46,18 @@ func TestFault_BrokerOutageThenRecovery(t *testing.T) {
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = b.Tenants.Create(ctx, tn)
 	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	if _, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
 
 	if n, _ := s.ReconcileOutbox(ctx, 10); n != 0 {
 		t.Fatalf("outage reconcile must publish 0, got %d", n)
 	}
 	aged, _ := b.Outbox.FetchUnpublished(ctx, 10, 0)
-	if len(aged) != 1 || aged[0].RetryCount != 1 {
+	if len(aged) != 1 || aged[0].RetryCount != 1 || aged[0].NextPublishAt == nil {
 		t.Fatalf("failure must bump retry_count, got %+v", aged)
 	}
+	time.Sleep(time.Until(*aged[0].NextPublishAt))
 	if n, _ := s.ReconcileOutbox(ctx, 10); n != 1 {
 		t.Fatalf("recovered reconcile must publish 1, got %d", n)
 	}
@@ -81,6 +85,65 @@ func TestFault_ZombieWriteAfterLeaseLoss(t *testing.T) {
 
 	if _, err := s.ReportCompletion(ctx, job.ID, "zombie", domain.StatusSucceeded, staleToken, ""); err != domain.ErrFencingTokenStale {
 		t.Fatalf("zombie write must be rejected, got %v", err)
+	}
+}
+
+func TestFault_ReaperRetriesAndDeadLetters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, b := newTestScheduler()
+	tn := seedTenant(t, s, b)
+
+	retryJob, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "retry", Priority: domain.PriorityDefault, MaxAttempts: 2, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryToken, err := b.Jobs.ClaimJob(ctx, retryJob.ID, "crashed", time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if n, err := s.ReapExpiredLeases(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("first reaper pass: n=%d err=%v", n, err)
+	}
+	retried, err := s.GetJob(ctx, retryJob.ID)
+	if err != nil || retried.Status != domain.StatusPending || retried.AttemptCount != 1 || retried.NextRetryAt == nil || retried.FencingToken != retryToken+1 {
+		t.Fatalf("expired attempt must be fenced and retried: job=%+v err=%v", retried, err)
+	}
+	if retried.LeaseOwner != nil || retried.LeaseExpiresAt != nil {
+		t.Fatalf("retried job must release its lease: %+v", retried)
+	}
+	outbox, err := b.Outbox.FetchUnpublished(ctx, 100, 0)
+	if err != nil || len(outbox) != 0 {
+		t.Fatalf("recovery must leave retry publication to ready dispatch: rows=%d err=%v", len(outbox), err)
+	}
+	if _, err := s.ReportCompletion(ctx, retryJob.ID, "crashed", domain.StatusSucceeded, retryToken, ""); err != domain.ErrFencingTokenStale {
+		t.Fatalf("late completion from expired attempt must fail stale: %v", err)
+	}
+
+	deadJob, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "dead", Priority: domain.PriorityDefault, MaxAttempts: 1, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "child", DependsOn: &deadJob.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadToken, err := b.Jobs.ClaimJob(ctx, deadJob.ID, "crashed", time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if n, err := s.ReapExpiredLeases(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("second reaper pass: n=%d err=%v", n, err)
+	}
+	dead, err := s.GetJob(ctx, deadJob.ID)
+	if err != nil || dead.Status != domain.StatusDead || dead.AttemptCount != 1 || dead.FencingToken != deadToken+1 {
+		t.Fatalf("exhausted expired attempt must dead-letter: job=%+v err=%v", dead, err)
+	}
+	cancelled, err := s.GetJob(ctx, child.ID)
+	if err != nil || cancelled.Status != domain.StatusCancelled {
+		t.Fatalf("dead-lettering must cancel dependents: job=%+v err=%v", cancelled, err)
 	}
 }
 

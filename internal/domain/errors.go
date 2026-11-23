@@ -3,6 +3,13 @@ package domain
 import "errors"
 
 var (
+	// ErrInvalidInput indicates an invalid API field.
+	ErrInvalidInput = errors.New("invalid input")
+	// ErrIdempotencyConflict indicates that a submission key identifies different input.
+	ErrIdempotencyConflict = errors.New("submission key already used for different input")
+	ErrPayloadExpired      = errors.New("terminal job payload has expired; submit a new job")
+	// ErrTenantLimit indicates the tenant's outstanding quota or submission rate is exceeded.
+	ErrTenantLimit = errors.New("tenant quota or submission rate exceeded")
 	// ErrJobNotFound indicates the requested job does not exist.
 	ErrJobNotFound = errors.New("job not found")
 

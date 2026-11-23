@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -119,6 +120,7 @@ func TestToGRPCError_Codes(t *testing.T) {
 		{domain.ErrDependencyNotMet, "FailedPrecondition"},
 		{domain.ErrDependencyCycle, "FailedPrecondition"},
 		{domain.ErrFencingTokenStale, "Aborted"},
+		{fmt.Errorf("wrapped: %w", domain.ErrFencingTokenStale), "Aborted"},
 		{nil, "OK"},
 	}
 	for _, tc := range cases {

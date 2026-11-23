@@ -16,13 +16,13 @@ service SchedulerService {
   // GetJob retrieves the current state and metadata of a specific job.
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
 
-  // ListJobs returns a paginated list of jobs for a tenant with optional filtering.
+  // ListJobs returns metadata only (no payload), with count and byte bounded pages.
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
 
   // CancelJob cancels a job only if it is currently in PENDING status.
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
 
-  // GetJobEvents returns the audit trail of status transitions for a job.
+  // GetJobEvents returns a bounded chronological page of safe audit metadata.
   rpc GetJobEvents(GetJobEventsRequest) returns (GetJobEventsResponse);
 
   // ReportJobCompletion is invoked when a worker finishes job execution,
@@ -34,6 +34,9 @@ service SchedulerService {
 
   // TriggerReconciliation manually kicks off outbox reconciliation for unpublished jobs.
   rpc TriggerReconciliation(TriggerReconciliationRequest) returns (TriggerReconciliationResponse);
+
+  // RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
+  rpc RequeueDeadJob(RequeueDeadJobRequest) returns (RequeueDeadJobResponse);
 }
 
 message SubmitJobRequest {
@@ -44,7 +47,12 @@ message SubmitJobRequest {
   int32 max_attempts = 5;
   optional string depends_on = 6;
   optional google.protobuf.Timestamp scheduled_at = 7;
+  string idempotency_key = 8;
+  int64 timeout_ms = 9;
 }
+
+message RequeueDeadJobRequest { string job_id = 1; }
+message RequeueDeadJobResponse { Job job = 1; }
 
 message SubmitJobResponse {
   Job job = 1;
@@ -63,6 +71,7 @@ message ListJobsRequest {
   string tenant_id = 1;
   optional JobStatus status = 2;
   optional JobPriority priority = 3;
+  // Defaults to 100; maximum 1000. A byte budget may shorten a page further.
   int32 limit = 4;
   int32 offset = 5;
 }
@@ -70,6 +79,9 @@ message ListJobsRequest {
 message ListJobsResponse {
   repeated Job jobs = 1;
   int64 total_count = 2;
+  // Continue at next_offset while has_more is true. Use the same filters.
+  int32 next_offset = 3;
+  bool has_more = 4;
 }
 
 message CancelJobRequest {
@@ -86,10 +98,16 @@ message CancelJobResponse {
 message GetJobEventsRequest {
   string tenant_id = 1;
   string job_id = 2;
+  // Defaults to 100; maximum 1000. A byte budget may shorten a page further.
+  int32 limit = 3;
+  int32 offset = 4;
 }
 
 message GetJobEventsResponse {
   repeated JobEvent events = 1;
+  // Continue at next_offset while has_more is true.
+  int32 next_offset = 2;
+  bool has_more = 3;
 }
 
 message ReportJobCompletionRequest {
