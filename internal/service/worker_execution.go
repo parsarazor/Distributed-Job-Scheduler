@@ -96,6 +96,7 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 	started := time.Now()
 	attempt := job.AttemptCount
 	runErr := invokeHandler(jobCtx, h, job)
+	a.handlerDone.Store(true)
 	telemetry.Latency.Observe(time.Since(started).Seconds())
 
 	// Finalization has its own bounded budget so cancellation can still persist a
@@ -223,6 +224,10 @@ func completionObserved(job *domain.Job, token int64, attempt int, final domain.
 	return (job.Status == domain.StatusPending || job.Status == domain.StatusDead) && job.AttemptCount == attempt+1
 }
 
+// resultPending reports that the handler has returned; past the local deadline
+// its result is still reported and the server's fencing token decides it.
+func (a *activeJob) resultPending() bool { return a.completing || a.handlerDone.Load() }
+
 func waitCompletionRetry(ctx context.Context, delay time.Duration) bool {
 	t := time.NewTimer(delay)
 	defer t.Stop()
@@ -243,7 +248,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
 		}
 		remaining := time.Until(a.deadline)
 		finished := a.finished || a.leaseLost
-		if remaining <= 0 && !finished && !a.completing {
+		if remaining <= 0 && !finished && !a.resultPending() {
 			a.leaseLost = true
 			a.cancel(domain.ErrLeaseLost)
 		}
@@ -284,7 +289,7 @@ func (w *Worker) renewLease(ctx context.Context, a *activeJob, automatic bool) e
 		return domain.ErrLeaseLost
 	}
 	if !time.Now().Before(a.deadline) {
-		if a.completing {
+		if a.resultPending() {
 			return context.DeadlineExceeded // the server decides the reported result
 		}
 		a.leaseLost = true
@@ -302,7 +307,7 @@ func (w *Worker) renewLease(ctx context.Context, a *activeJob, automatic bool) e
 	// A transient error (scheduler restarting, network blip) keeps the
 	// handler running until the local deadline, which never outlives the
 	// stored lease. Only a fencing rejection or that deadline loses it.
-	if errors.Is(err, domain.ErrLeaseLost) || (!time.Now().Before(a.deadline) && !a.completing) {
+	if errors.Is(err, domain.ErrLeaseLost) || (!time.Now().Before(a.deadline) && !a.resultPending()) {
 		a.leaseLost = true
 		a.cancel(domain.ErrLeaseLost)
 		return domain.ErrLeaseLost

@@ -17,7 +17,8 @@ import (
 // restarting scheduler does.
 type outageControl struct {
 	JobControl
-	down atomic.Bool
+	down  atomic.Bool
+	stall atomic.Bool // renewals hang until their deadline while down
 }
 
 func (c *outageControl) unavailable() error {
@@ -26,6 +27,9 @@ func (c *outageControl) unavailable() error {
 
 func (c *outageControl) RenewLease(ctx context.Context, id uuid.UUID, worker string, token int64, ttl time.Duration) error {
 	if c.down.Load() {
+		if c.stall.Load() {
+			<-ctx.Done()
+		}
 		return c.unavailable()
 	}
 	return c.JobControl.RenewLease(ctx, id, worker, token, ttl)
@@ -109,5 +113,37 @@ func TestGrantLeaseGrace_DisabledByZero(t *testing.T) {
 	s, _, _ := newWiredPair()
 	if n, err := s.GrantLeaseGrace(context.Background(), 0); n != 0 || err != nil {
 		t.Fatalf("zero grace must be a no-op: %d %v", n, err)
+	}
+}
+
+func TestWorker_StalledRenewalKeepsFinishedResult(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newWiredPair()
+	ctl := &outageControl{JobControl: NewRemoteJobControl(dialScheduler(t, s, workerTestKey))}
+	ctl.stall.Store(true)
+	const ttl = 300 * time.Millisecond
+	w := NewRemoteWorker("stall-worker", ctl, 1, ttl)
+	w.SetCompletionWindow(5 * time.Second)
+	var runs atomic.Int32
+	w.RegisterHandler("work", func(context.Context, *domain.Job) error {
+		runs.Add(1)
+		ctl.down.Store(true)
+		time.Sleep(ttl / 2) // the renewal at ttl/3 is now blocked until the deadline
+		return nil
+	})
+	job, announcement := submitAndAnnounce(t, s, "work", `{}`)
+	go func() {
+		time.Sleep(3 * ttl)
+		if _, err := s.GrantLeaseGrace(context.Background(), time.Minute); err != nil {
+			t.Errorf("grace: %v", err)
+		}
+		ctl.down.Store(false)
+	}()
+	if err := w.HandleMessage(context.Background(), announcement); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	stored, _ := s.GetJob(context.Background(), job.ID)
+	if stored.Status != domain.StatusSucceeded || stored.AttemptCount != 0 || runs.Load() != 1 {
+		t.Fatalf("finished result discarded: status=%s attempts=%d runs=%d", stored.Status, stored.AttemptCount, runs.Load())
 	}
 }

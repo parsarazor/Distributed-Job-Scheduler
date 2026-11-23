@@ -71,17 +71,18 @@ func run(ctx context.Context) (runErr error) {
 	}
 	apiv1.RegisterSchedulerServiceServer(grpcServer, service.NewSchedulerServer(deps.Scheduler))
 
+	// Without the grace, the reaper could re-run jobs whose results workers
+	// are still retrying, so it gates serving and the reaper.
+	if err := grantLeaseGrace(ctx, deps); err != nil {
+		return err
+	}
+
 	// Background loops: dispatch, retry, reconcile and lease recovery.
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	ops, err := app.ServeOperations(runCtx, deps, health, "127.0.0.1:9090", nil)
 	if err != nil {
 		return fmt.Errorf("listen for operations HTTP: %w", err)
-	}
-	if n, err := deps.Scheduler.GrantLeaseGrace(runCtx, deps.LeaseRestartGrace); err != nil {
-		slog.Error("lease restart grace", "error", err)
-	} else if n > 0 {
-		slog.Info("extended lapsed leases after restart", "leases", n, "grace", deps.LeaseRestartGrace)
 	}
 	var loops sync.WaitGroup
 	app.WakeLoop(runCtx, &loops, deps.DispatchInterval, deps.Scheduler.DispatchWake(), "dispatch", func(ctx context.Context) error { _, err := deps.Scheduler.DispatchReady(ctx, 100); return err })
@@ -113,6 +114,26 @@ func run(ctx context.Context) (runErr error) {
 	}
 	slog.Info("scheduler stopped")
 	return runErr
+}
+
+func grantLeaseGrace(ctx context.Context, deps *app.Deps) error {
+	graceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		n, err := deps.Scheduler.GrantLeaseGrace(graceCtx, deps.LeaseRestartGrace)
+		if err == nil {
+			if n > 0 {
+				slog.Info("extended lapsed leases after restart", "leases", n, "grace", deps.LeaseRestartGrace)
+			}
+			return nil
+		}
+		slog.Warn("lease restart grace failed; retrying", "error", err)
+		select {
+		case <-graceCtx.Done():
+			return fmt.Errorf("extend leases after restart: %w", err)
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func storageMode() string {

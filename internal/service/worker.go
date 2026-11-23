@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,7 +48,10 @@ type activeJob struct {
 	deadline   time.Time
 	finished   bool
 	completing bool
-	leaseLost  bool
+	// handlerDone is set without the gate when the handler returns, so a
+	// renewal stalled until the deadline cannot discard a finished result.
+	handlerDone atomic.Bool
+	leaseLost   bool
 }
 
 // NewWorker creates a worker with maxConcurrency slots and a repository-owned lease.
