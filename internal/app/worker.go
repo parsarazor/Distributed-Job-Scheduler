@@ -9,14 +9,17 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 // NewWorkerFromEnv wires a worker. STORAGE=memory keeps the process-private
@@ -78,6 +81,7 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	}
 	cleanups = append(cleanups, func() { _ = conn.Close() })
 	health := healthpb.NewHealthClient(conn)
+	scheduler := apiv1.NewSchedulerServiceClient(conn)
 	schedulerReady := func(ctx context.Context) error {
 		resp, err := health.Check(ctx, &healthpb.HealthCheckRequest{})
 		if err != nil {
@@ -86,7 +90,17 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		if resp.GetStatus() != healthpb.HealthCheckResponse_SERVING {
 			return fmt.Errorf("scheduler is %s", resp.GetStatus())
 		}
-		return nil
+		// Health is public; probe a worker-role RPC so a rejected WORKER_TOKEN
+		// keeps the worker unready instead of failing every claim.
+		_, err = scheduler.GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: uuid.Nil.String()})
+		switch status.Code(err) {
+		case codes.OK, codes.NotFound, codes.Aborted:
+			return nil
+		case codes.Unauthenticated, codes.PermissionDenied:
+			return errors.New("scheduler rejected WORKER_TOKEN")
+		default:
+			return fmt.Errorf("scheduler worker RPCs: %w", err)
+		}
 	}
 	if err := schedulerReady(ctx); err != nil {
 		cleanup()
@@ -102,7 +116,7 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	if workerID == "" {
 		workerID = "worker-1"
 	}
-	control := service.NewRemoteJobControl(apiv1.NewSchedulerServiceClient(conn))
+	control := service.NewRemoteJobControl(scheduler)
 	worker := service.NewRemoteWorker(workerID, control, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)
 	return &Deps{Worker: worker, Broker: rb, Cleanup: cleanup, checkSchema: schedulerReady, serverConfig: &cfg}, nil
