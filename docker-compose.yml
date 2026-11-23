@@ -80,7 +80,7 @@ services:
       STORAGE: postgres
       APP_ENV: development
       WORKER_TOKEN: local-development-worker-token-change-me
-      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      SCHEDULER_ADDR: scheduler:50051
       RABBITMQ_URL: amqp://scheduler:scheduler@rabbitmq:5672/
       WORKER_ID: worker-1
       PORT: "50052"
@@ -94,8 +94,8 @@ services:
       timeout: 4s
       retries: 12
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      scheduler:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
 

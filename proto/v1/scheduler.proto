@@ -37,6 +37,17 @@ service SchedulerService {
 
   // RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
   rpc RequeueDeadJob(RequeueDeadJobRequest) returns (RequeueDeadJobResponse);
+
+  // ClaimJobExecution acknowledges an announcement's delivery and claims the
+  // announced attempt for a worker, minting its fencing token and lease.
+  // Workers have no database access; this is their only path to claim work.
+  rpc ClaimJobExecution(ClaimJobExecutionRequest) returns (ClaimJobExecutionResponse);
+
+  // RenewJobLease extends a live lease held by the exact worker and token.
+  rpc RenewJobLease(RenewJobLeaseRequest) returns (RenewJobLeaseResponse);
+
+  // GetExecutionJob returns a job with its lease state for worker reconciliation.
+  rpc GetExecutionJob(GetExecutionJobRequest) returns (GetExecutionJobResponse);
 }
 
 message SubmitJobRequest {
@@ -137,4 +148,36 @@ message TriggerReconciliationRequest {
 
 message TriggerReconciliationResponse {
   int32 reconciled_count = 1;
+}
+
+message ClaimJobExecutionRequest {
+  string job_id = 1;
+  int32 attempt_count = 2;
+  int64 fencing_token = 3;
+  string worker_id = 4;
+  int64 lease_ttl_ms = 5;
+}
+
+message ClaimJobExecutionResponse {
+  Job job = 1;
+  int64 fencing_token = 2;
+}
+
+message RenewJobLeaseRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  int64 fencing_token = 3;
+  int64 lease_ttl_ms = 4;
+}
+
+message RenewJobLeaseResponse {}
+
+message GetExecutionJobRequest {
+  string job_id = 1;
+}
+
+message GetExecutionJobResponse {
+  Job job = 1;
+  optional string lease_owner = 2;
+  optional google.protobuf.Timestamp lease_expires_at = 3;
 }

@@ -18,11 +18,12 @@ import (
 // Handler executes one job. It must respect ctx cancellation, including lease loss.
 type Handler func(ctx context.Context, job *domain.Job) error
 
-// Worker claims jobs atomically through the repository, executes them with
+// Worker claims jobs atomically through its JobControl, executes them with
 // bounded concurrency and renews their leases until execution finishes.
 type Worker struct {
 	id             string
-	sched          *Scheduler
+	sched          *Scheduler // in-process only; nil for remote workers
+	ctl            JobControl
 	leaseTTL       time.Duration
 	sem            *semaphore.Weighted
 	maxConcurrency int64
@@ -51,6 +52,16 @@ type activeJob struct {
 // NewWorker creates a worker with maxConcurrency slots and a repository-owned lease.
 // Nonpositive values select the defaults of 10 slots and a 30-second lease.
 func NewWorker(id string, sched *Scheduler, maxConcurrency int64, leaseTTL time.Duration) *Worker {
+	return newWorker(id, sched, schedulerControl{s: sched}, maxConcurrency, leaseTTL)
+}
+
+// NewRemoteWorker creates a database-free worker that claims, renews and
+// completes jobs through the scheduler. It consumes announcements only.
+func NewRemoteWorker(id string, ctl JobControl, maxConcurrency int64, leaseTTL time.Duration) *Worker {
+	return newWorker(id, nil, ctl, maxConcurrency, leaseTTL)
+}
+
+func newWorker(id string, sched *Scheduler, ctl JobControl, maxConcurrency int64, leaseTTL time.Duration) *Worker {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 10
 	}
@@ -59,7 +70,7 @@ func NewWorker(id string, sched *Scheduler, maxConcurrency int64, leaseTTL time.
 	}
 	lifetime, stop := context.WithCancelCause(context.Background())
 	return &Worker{
-		id: id, sched: sched, leaseTTL: leaseTTL,
+		id: id, sched: sched, ctl: ctl, leaseTTL: leaseTTL,
 		sem: semaphore.NewWeighted(maxConcurrency), maxConcurrency: maxConcurrency,
 		handlers: make(map[string]Handler), active: make(map[uuid.UUID]*activeJob),
 		startedAt:  time.Now().UTC(),
@@ -152,6 +163,9 @@ type ActiveInfo struct {
 func (w *Worker) RunOnce(ctx context.Context, batchSize int) (int, error) {
 	if w.IsDraining() {
 		return 0, nil
+	}
+	if w.sched == nil {
+		return 0, errors.New("polling requires an in-process scheduler")
 	}
 	ready, err := w.sched.jobs.GetReadyJobs(ctx, batchSize)
 	if err != nil {

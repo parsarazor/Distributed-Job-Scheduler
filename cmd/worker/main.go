@@ -42,7 +42,7 @@ func run(signals <-chan os.Signal) error {
 		defer cancel()
 		_ = shutdownTracing(shutdownCtx)
 	}()
-	deps, err := app.NewFromEnv(startupCtx)
+	deps, err := app.NewWorkerFromEnv(startupCtx)
 	if err != nil {
 		return err
 	}

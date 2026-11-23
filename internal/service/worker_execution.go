@@ -42,41 +42,12 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 	base = propagation.TraceContext{}.Extract(base, propagation.MapCarrier{"traceparent": announcement.TraceParent, "tracestate": announcement.TraceState})
 	base, span := otel.Tracer("scheduler").Start(base, "job.execute")
 	defer span.End()
-	var job *domain.Job
-	var token int64
-	var claimedAt time.Time
 	claimCtx, cancelClaim := context.WithTimeout(base, 10*time.Second)
 	defer cancelClaim()
-	// Commit receipt separately from the claim: obsolete/canceled announcements
-	// still release their broker credit, and no outbox lock spans a job lock.
-	if err := w.sched.outbox.MarkDelivered(claimCtx, domain.DispatchID(announcement.ID, announcement.AttemptCount, announcement.FencingToken)); err != nil {
-		return false, err
-	}
-	err := w.sched.tx.WithinTransaction(claimCtx, func(ctx context.Context) error {
-		stored, err := w.sched.jobs.GetByIDForUpdate(ctx, announcement.ID)
-		if err != nil {
-			return err
-		}
-		if stored.FencingToken != announcement.FencingToken || stored.AttemptCount != announcement.AttemptCount {
-			return domain.ErrJobNotClaimable
-		}
-		claimedAt = time.Now()
-		token, err = w.sched.jobs.ClaimJob(ctx, stored.ID, w.id, w.leaseTTL)
-		if err != nil {
-			return err
-		}
-		job, err = w.sched.jobs.GetByID(ctx, stored.ID)
-		if err != nil {
-			return err
-		}
-		if err := w.sched.recordTransition(ctx, job.ID, domain.StatusPending, domain.StatusRunning, w.id, ""); err != nil {
-			return err
-		}
-		if time.Since(claimedAt) >= w.leaseTTL {
-			return domain.ErrLeaseLost
-		}
-		return nil
-	})
+	// The local lease deadline starts before the claim request so it can only
+	// expire earlier than the lease the scheduler stores.
+	claimedAt := time.Now()
+	job, token, err := w.ctl.ClaimExecution(claimCtx, announcement, w.id, w.leaseTTL)
 	// A deleted job or an obsolete announcement has no remaining work to do.
 	if errors.Is(err, domain.ErrJobNotClaimable) || errors.Is(err, domain.ErrJobNotFound) {
 		return false, nil
@@ -205,7 +176,7 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 		// may have committed even when its response was lost.
 		if lastErr != nil {
 			readCtx, cancel := context.WithTimeout(ctx, min(w.leaseTTL/3, time.Second))
-			stored, err := w.sched.jobs.GetByID(readCtx, a.info.JobID)
+			stored, err := w.ctl.GetExecutionJob(readCtx, a.info.JobID)
 			cancel()
 			if err == nil && completionObserved(stored, a.info.FencingToken, attempt, final) {
 				a.finished = true
@@ -228,7 +199,7 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 			return domain.ErrLeaseLost
 		}
 		opCtx, cancel := context.WithDeadline(ctx, minTime(a.deadline, time.Now().Add(min(w.leaseTTL/3, time.Second))))
-		_, lastErr = w.sched.ReportCompletion(opCtx, a.info.JobID, w.id, final, a.info.FencingToken, msg)
+		lastErr = w.ctl.ReportCompletion(opCtx, a.info.JobID, w.id, final, a.info.FencingToken, msg)
 		cancel()
 		if lastErr == nil {
 			a.finished = true
@@ -325,7 +296,7 @@ func (w *Worker) renewLease(ctx context.Context, a *activeJob, automatic bool) e
 	renewCtx, cancel := context.WithDeadline(ctx, a.deadline)
 	stop := context.AfterFunc(a.ctx, cancel)
 	defer func() { stop(); cancel() }()
-	err := w.sched.jobs.RenewLease(renewCtx, a.info.JobID, w.id, a.info.FencingToken, w.leaseTTL)
+	err := w.ctl.RenewLease(renewCtx, a.info.JobID, w.id, a.info.FencingToken, w.leaseTTL)
 	if a.ctx.Err() != nil {
 		return domain.ErrLeaseLost
 	}

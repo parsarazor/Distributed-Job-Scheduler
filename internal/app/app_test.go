@@ -121,3 +121,24 @@ func TestLoop_RecoversFromPanickingTick(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+func TestNewWorkerFromEnv_RequiresSchedulerAndRejectsDatabase(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"database credentials": {"DATABASE_URL": "postgres://scheduler:scheduler@db/scheduler", "SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/"},
+		"no scheduler":         {"RABBITMQ_URL": "amqp://u:p@q/"},
+		"no broker":            {"SCHEDULER_ADDR": "scheduler:50051"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("APP_ENV", "development")
+			t.Setenv("STORAGE", "")
+			t.Setenv("WORKER_TOKEN", "local-development-worker-token-change-me")
+			for _, key := range []string{"DATABASE_URL", "SCHEDULER_ADDR", "RABBITMQ_URL"} {
+				t.Setenv(key, env[key])
+			}
+			if deps, err := NewWorkerFromEnv(context.Background()); err == nil {
+				deps.Cleanup()
+				t.Fatal("worker started without the scheduler-only boundary")
+			}
+		})
+	}
+}

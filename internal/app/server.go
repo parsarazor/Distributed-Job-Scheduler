@@ -94,12 +94,14 @@ func ServeOperations(ctx context.Context, deps *Deps, health *RuntimeHealth, def
 			return err
 		}
 		if deps.checkSchema != nil {
-			// This executes a query against Postgres and also checks connectivity.
+			// Checks the Postgres schema, or scheduler health for a remote worker.
 			if err := deps.checkSchema(ctx); err != nil {
 				return err
 			}
-		} else if err := deps.Operations.Ping(ctx); err != nil {
-			return err
+		} else if deps.Operations != nil {
+			if err := deps.Operations.Ping(ctx); err != nil {
+				return err
+			}
 		}
 		if intakeCheck != nil {
 			return intakeCheck(ctx)
@@ -166,6 +168,15 @@ func sampleOperations(ctx context.Context, check func(context.Context) error, de
 			return
 		}
 		logSamplingState("readiness check", err, &priorReadinessErr)
+		if deps.Operations == nil {
+			// Database-free workers have no persisted gauges to sample.
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			continue
+		}
 
 		statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		stats, err := deps.Operations.Stats(statsCtx)

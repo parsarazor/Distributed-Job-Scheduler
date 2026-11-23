@@ -79,7 +79,7 @@
 * **Why:** Crashes between confirmation and commit can duplicate announcements. AMQP `message_id` is the outbox event UUID and does not itself deduplicate deliveries. Workers compare the announced attempt and fencing token before atomically claiming. Handlers receive `job.IdempotencyKey()` for downstream attempt deduplication and must use a job-scoped key when effects must be unique across retries.
 
 ### ADR 012: Tenant admission and fair dispatch
-Submission locks the tenant row before checking idempotency, outstanding quota and rolling submission rate. A unique partial index enforces `(tenant_id, submission_key)`. Dispatch locks tenant rows using `SKIP LOCKED`, orders by persisted last-dispatch time and selects one job per tenant per round. Ten outstanding dispatched jobs per tenant bound broker backlog. Tenant bearer credentials determine API scope; worker execution/control and scheduler administration use distinct deployment credentials. TLS is required outside explicit local development.
+Submission locks the tenant row before checking idempotency, outstanding quota and rolling submission rate. A unique partial index enforces `(tenant_id, submission_key)`. Dispatch locks tenant rows using `SKIP LOCKED`, orders by persisted last-dispatch time and selects one job per tenant per round. Ten outstanding dispatched jobs per tenant bound broker backlog. The scheduler is the sole owner of the database; workers claim, renew and complete jobs through its worker RPCs and hold no database credentials. Tenant bearer credentials determine API scope; worker execution/control and scheduler administration use distinct deployment credentials. TLS is required outside explicit local development.
 
 
 ### ADR 013: Bounded API and recovery contracts

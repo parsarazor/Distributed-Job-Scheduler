@@ -57,23 +57,11 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	if err != nil {
 		return nil, err
 	}
-	maxConcurrency := int64(10)
-	if raw := os.Getenv("MAX_CONCURRENCY"); raw != "" {
-		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed <= 0 || parsed > 65535 {
-			return nil, fmt.Errorf("invalid MAX_CONCURRENCY %q", raw)
-		}
-		maxConcurrency = parsed
-	}
-	leaseTTL, err := durationFromEnv("LEASE_TTL", 30*time.Second)
+	limits, err := workerLimitsFromEnv()
 	if err != nil {
 		return nil, err
 	}
 	reaperInterval, err := durationFromEnv("REAPER_INTERVAL", 10*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	jobTimeout, err := durationFromEnv("JOB_TIMEOUT", 5*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +123,8 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	if workerID == "" {
 		workerID = "worker-1"
 	}
-	worker := service.NewWorker(workerID, sched, maxConcurrency, leaseTTL)
-	worker.SetJobTimeout(jobTimeout)
+	worker := service.NewWorker(workerID, sched, limits.maxConcurrency, limits.leaseTTL)
+	worker.SetJobTimeout(limits.jobTimeout)
 	ops := tx.(repository.Operations)
 	return &Deps{
 		Scheduler: sched, Worker: worker, Broker: bus,
@@ -144,6 +132,31 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		Cleanup: cleanup, ReaperInterval: reaperInterval,
 		Operations: ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,
 	}, nil
+}
+
+type workerLimits struct {
+	maxConcurrency int64
+	leaseTTL       time.Duration
+	jobTimeout     time.Duration
+}
+
+func workerLimitsFromEnv() (workerLimits, error) {
+	limits := workerLimits{maxConcurrency: 10}
+	if raw := os.Getenv("MAX_CONCURRENCY"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 || parsed > 65535 {
+			return limits, fmt.Errorf("invalid MAX_CONCURRENCY %q", raw)
+		}
+		limits.maxConcurrency = parsed
+	}
+	var err error
+	if limits.leaseTTL, err = durationFromEnv("LEASE_TTL", 30*time.Second); err != nil {
+		return limits, err
+	}
+	if limits.jobTimeout, err = durationFromEnv("JOB_TIMEOUT", 5*time.Minute); err != nil {
+		return limits, err
+	}
+	return limits, nil
 }
 
 func durationFromEnv(name string, fallback time.Duration) (time.Duration, error) {
