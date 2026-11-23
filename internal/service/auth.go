@@ -107,6 +107,23 @@ func AuthenticatorWithWorkers(tenants repository.TenantRepository, workers repos
 		who := identity{role: roleTenant}
 		workerMatch := workerToken != "" && subtle.ConstantTimeCompare([]byte(key), []byte(workerToken)) == 1
 		adminMatch := admin != "" && subtle.ConstantTimeCompare([]byte(key), []byte(admin)) == 1
+		var cred *domain.WorkerCredential
+		if !workerMatch && !adminMatch && workers != nil && strings.HasPrefix(key, workerTokenPrefix) && !invalid.recent(domain.HashAPIKey(key)) {
+			found, err := workers.GetByTokenHash(ctx, domain.HashAPIKey(key))
+			switch {
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				return nil, toGRPCError(err)
+			case errors.Is(err, domain.ErrWorkerCredentialNotFound):
+				// A tenant key created before worker credentials may share the
+				// prefix; the tenant lookup below decides.
+			case err != nil || found == nil || found.WorkerID == "":
+				return nil, status.Error(codes.Unavailable, "authentication unavailable")
+			case found.RevokedAt != nil:
+				return nil, status.Error(codes.Unauthenticated, "worker credential revoked")
+			default:
+				cred = found
+			}
+		}
 		switch {
 		case len(adminToken) > 1 || (workerMatch && adminMatch):
 			return nil, status.Error(codes.Unavailable, "authentication configuration unavailable")
@@ -114,23 +131,7 @@ func AuthenticatorWithWorkers(tenants repository.TenantRepository, workers repos
 			who.role = roleWorker
 		case adminMatch:
 			who.role = roleAdmin
-		case workers != nil && strings.HasPrefix(key, workerTokenPrefix):
-			digest := domain.HashAPIKey(key)
-			if invalid.recent(digest) {
-				return nil, status.Error(codes.Unauthenticated, "invalid credential")
-			}
-			cred, err := workers.GetByTokenHash(ctx, digest)
-			switch {
-			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				return nil, toGRPCError(err)
-			case errors.Is(err, domain.ErrWorkerCredentialNotFound):
-				invalid.remember(digest)
-				return nil, status.Error(codes.Unauthenticated, "invalid credential")
-			case err != nil || cred == nil || cred.WorkerID == "":
-				return nil, status.Error(codes.Unavailable, "authentication unavailable")
-			case cred.RevokedAt != nil:
-				return nil, status.Error(codes.Unauthenticated, "worker credential revoked")
-			}
+		case cred != nil:
 			who.role, who.worker = roleWorker, cred.WorkerID
 		default:
 			if tenants == nil {
