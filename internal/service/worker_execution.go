@@ -176,14 +176,14 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 		// may have committed even when its response was lost.
 		if lastErr != nil {
 			readCtx, cancel := context.WithTimeout(ctx, min(w.leaseTTL/3, time.Second))
-			stored, err := w.ctl.GetExecutionJob(readCtx, a.info.JobID)
+			stored, err := w.ctl.GetExecutionJob(readCtx, a.info.JobID, w.id, a.info.FencingToken)
 			cancel()
 			if err == nil && completionObserved(stored, a.info.FencingToken, attempt, final) {
 				a.finished = true
 				a.gate.Release(1)
 				return nil
 			}
-			if err == nil && (stored.FencingToken != a.info.FencingToken || stored.Status != domain.StatusRunning) {
+			if errors.Is(err, domain.ErrLeaseLost) || (err == nil && (stored.FencingToken != a.info.FencingToken || stored.Status != domain.StatusRunning)) {
 				a.finished = true
 				a.gate.Release(1)
 				return domain.ErrLeaseLost

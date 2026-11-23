@@ -65,7 +65,8 @@ type SchedulerServiceClient interface {
 	ClaimJobExecution(ctx context.Context, in *ClaimJobExecutionRequest, opts ...grpc.CallOption) (*ClaimJobExecutionResponse, error)
 	// RenewJobLease extends a live lease held by the exact worker and token.
 	RenewJobLease(ctx context.Context, in *RenewJobLeaseRequest, opts ...grpc.CallOption) (*RenewJobLeaseResponse, error)
-	// GetExecutionJob returns a job with its lease state for worker reconciliation.
+	// GetExecutionJob returns job metadata (no payload) and lease state for one
+	// execution: the fencing token must match and any lease must be the caller's.
 	GetExecutionJob(ctx context.Context, in *GetExecutionJobRequest, opts ...grpc.CallOption) (*GetExecutionJobResponse, error)
 }
 
@@ -229,7 +230,8 @@ type SchedulerServiceServer interface {
 	ClaimJobExecution(context.Context, *ClaimJobExecutionRequest) (*ClaimJobExecutionResponse, error)
 	// RenewJobLease extends a live lease held by the exact worker and token.
 	RenewJobLease(context.Context, *RenewJobLeaseRequest) (*RenewJobLeaseResponse, error)
-	// GetExecutionJob returns a job with its lease state for worker reconciliation.
+	// GetExecutionJob returns job metadata (no payload) and lease state for one
+	// execution: the fencing token must match and any lease must be the caller's.
 	GetExecutionJob(context.Context, *GetExecutionJobRequest) (*GetExecutionJobResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }

@@ -138,6 +138,29 @@ func TestRemoteWorker_FailureSchedulesRetry(t *testing.T) {
 	}
 }
 
+func TestGetExecutionJob_ScopedToTheExecution(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newWiredPair()
+	job, _ := submitAndAnnounce(t, s, "x", `{"card":"4242"}`)
+	stored, _ := s.GetJob(context.Background(), job.ID)
+	client := dialScheduler(t, s, workerTestKey)
+	other := &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: "w", FencingToken: stored.FencingToken + 1}
+	if _, err := client.GetExecutionJob(context.Background(), other); status.Code(err) != codes.Aborted {
+		t.Fatalf("lookup with another attempt's token: %v", err)
+	}
+	token := claimTestJob(t, s, job.ID, "owner")
+	for _, worker := range []string{"intruder", ""} {
+		req := &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: worker, FencingToken: token}
+		if _, err := client.GetExecutionJob(context.Background(), req); status.Code(err) != codes.Aborted {
+			t.Fatalf("worker %q read another worker's execution: %v", worker, err)
+		}
+	}
+	resp, err := client.GetExecutionJob(context.Background(), &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: "owner", FencingToken: token})
+	if err != nil || resp.GetLeaseOwner() != "owner" || len(resp.GetJob().GetPayload()) != 0 {
+		t.Fatalf("owner lookup must return metadata without payload: %+v %v", resp, err)
+	}
+}
+
 func TestClaimJobExecution_RejectsUndispatchedJobs(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newWiredPair()

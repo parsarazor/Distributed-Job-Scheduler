@@ -334,7 +334,12 @@ func (s *SchedulerServer) GetExecutionJob(ctx context.Context, req *apiv1.GetExe
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
-	out := &apiv1.GetExecutionJobResponse{Job: DomainJobToProto(job), LeaseOwner: job.LeaseOwner}
+	// The shared worker credential must not read arbitrary jobs: only the
+	// execution that holds (or just released) this attempt may look it up.
+	if job.FencingToken != req.FencingToken || (job.LeaseOwner != nil && *job.LeaseOwner != req.WorkerId) {
+		return nil, toGRPCError(domain.ErrLeaseLost)
+	}
+	out := &apiv1.GetExecutionJobResponse{Job: DomainJobMetadataToProto(job), LeaseOwner: job.LeaseOwner}
 	if job.LeaseExpiresAt != nil {
 		out.LeaseExpiresAt = timestamppb.New(*job.LeaseExpiresAt)
 	}

@@ -46,7 +46,8 @@ service SchedulerService {
   // RenewJobLease extends a live lease held by the exact worker and token.
   rpc RenewJobLease(RenewJobLeaseRequest) returns (RenewJobLeaseResponse);
 
-  // GetExecutionJob returns a job with its lease state for worker reconciliation.
+  // GetExecutionJob returns job metadata (no payload) and lease state for one
+  // execution: the fencing token must match and any lease must be the caller's.
   rpc GetExecutionJob(GetExecutionJobRequest) returns (GetExecutionJobResponse);
 }
 
@@ -174,6 +175,8 @@ message RenewJobLeaseResponse {}
 
 message GetExecutionJobRequest {
   string job_id = 1;
+  string worker_id = 2;
+  int64 fencing_token = 3;
 }
 
 message GetExecutionJobResponse {

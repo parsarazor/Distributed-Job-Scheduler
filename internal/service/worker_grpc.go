@@ -32,7 +32,7 @@ func (s *WorkerServer) Execute(ctx context.Context, req *apiv1.ExecuteRequest) (
 	if err != nil || id == uuid.Nil || req.Job.AttemptCount < 0 || req.Job.FencingToken < 0 {
 		return &apiv1.ExecuteResponse{Accepted: false, Message: "invalid job id"}, nil
 	}
-	job, err := s.worker.ctl.GetExecutionJob(ctx, id)
+	job, err := s.worker.ctl.GetExecutionJob(ctx, id, s.worker.id, req.Job.FencingToken)
 	if err != nil {
 		slog.Error("worker execute job lookup failed", "job_id", id, "error", err)
 		if errors.Is(err, domain.ErrJobNotFound) {

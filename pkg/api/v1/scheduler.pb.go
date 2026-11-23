@@ -1285,6 +1285,8 @@ func (*RenewJobLeaseResponse) Descriptor() ([]byte, []int) {
 type GetExecutionJobRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	FencingToken  int64                  `protobuf:"varint,3,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1324,6 +1326,20 @@ func (x *GetExecutionJobRequest) GetJobId() string {
 		return x.JobId
 	}
 	return ""
+}
+
+func (x *GetExecutionJobRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *GetExecutionJobRequest) GetFencingToken() int64 {
+	if x != nil {
+		return x.FencingToken
+	}
+	return 0
 }
 
 type GetExecutionJobResponse struct {
@@ -1482,9 +1498,11 @@ const file_proto_v1_scheduler_proto_rawDesc = "" +
 	"\rfencing_token\x18\x03 \x01(\x03R\ffencingToken\x12 \n" +
 	"\flease_ttl_ms\x18\x04 \x01(\x03R\n" +
 	"leaseTtlMs\"\x17\n" +
-	"\x15RenewJobLeaseResponse\"/\n" +
+	"\x15RenewJobLeaseResponse\"q\n" +
 	"\x16GetExecutionJobRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\xca\x01\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12#\n" +
+	"\rfencing_token\x18\x03 \x01(\x03R\ffencingToken\"\xca\x01\n" +
 	"\x17GetExecutionJobResponse\x12\x19\n" +
 	"\x03job\x18\x01 \x01(\v2\a.v1.JobR\x03job\x12$\n" +
 	"\vlease_owner\x18\x02 \x01(\tH\x00R\n" +

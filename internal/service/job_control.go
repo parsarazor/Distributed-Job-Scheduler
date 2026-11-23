@@ -22,8 +22,10 @@ type JobControl interface {
 	ClaimExecution(ctx context.Context, announcement *domain.Job, workerID string, ttl time.Duration) (*domain.Job, int64, error)
 	RenewLease(ctx context.Context, jobID uuid.UUID, workerID string, token int64, ttl time.Duration) error
 	ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string) error
-	// GetExecutionJob returns the stored job including its lease state.
-	GetExecutionJob(ctx context.Context, jobID uuid.UUID) (*domain.Job, error)
+	// GetExecutionJob returns the stored job including its lease state. Remote
+	// lookups omit the payload and fail with ErrLeaseLost unless token is the
+	// job's current fencing token and any lease belongs to workerID.
+	GetExecutionJob(ctx context.Context, jobID uuid.UUID, workerID string, token int64) (*domain.Job, error)
 }
 
 // ClaimExecution commits delivery receipt separately from the claim, so
@@ -81,7 +83,7 @@ func (c schedulerControl) ReportCompletion(ctx context.Context, jobID uuid.UUID,
 	return err
 }
 
-func (c schedulerControl) GetExecutionJob(ctx context.Context, jobID uuid.UUID) (*domain.Job, error) {
+func (c schedulerControl) GetExecutionJob(ctx context.Context, jobID uuid.UUID, _ string, _ int64) (*domain.Job, error) {
 	return c.s.GetJob(ctx, jobID)
 }
 
@@ -125,8 +127,8 @@ func (c *RemoteJobControl) ReportCompletion(ctx context.Context, jobID uuid.UUID
 	return fromGRPCError(err)
 }
 
-func (c *RemoteJobControl) GetExecutionJob(ctx context.Context, jobID uuid.UUID) (*domain.Job, error) {
-	resp, err := c.client.GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: jobID.String()})
+func (c *RemoteJobControl) GetExecutionJob(ctx context.Context, jobID uuid.UUID, workerID string, token int64) (*domain.Job, error) {
+	resp, err := c.client.GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: jobID.String(), WorkerId: workerID, FencingToken: token})
 	if err != nil {
 		return nil, fromGRPCError(err)
 	}
