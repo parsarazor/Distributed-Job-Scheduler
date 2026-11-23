@@ -213,15 +213,13 @@ func (r *RabbitMQBroker) Publish(ctx context.Context, routingKey string, payload
 	}
 	publisher := r.publisher
 	err := withConnectionContext(ctx, publisher.conn, func() error {
-		// Publish through the declared topic exchange. Both consumer queues are
-		// explicitly bound to it (jobs.execute and jobs.execute.quarantine), so
-		// routing is intentional: an unbound routing key is detected by the
-		// mandatory flag instead of silently creating an unroutable queue.
+		// The default exchange routes by exact queue name. A wildcard binding
+		// on the public topic exchange must not confirm a missing jobs queue.
 		expiration := ""
 		if routingKey == JobsRoutingKey {
 			expiration = strconv.FormatInt(ExecutionMessageTTL.Milliseconds(), 10)
 		}
-		if err := publisher.ch.PublishWithContext(ctx, r.exchange, routingKey, true, false, amqp.Publishing{
+		if err := publisher.ch.PublishWithContext(ctx, "", routingKey, true, false, amqp.Publishing{
 			ContentType: "application/json", Body: payload, MessageId: messageID, DeliveryMode: amqp.Persistent,
 			Expiration: expiration,
 		}); err != nil {

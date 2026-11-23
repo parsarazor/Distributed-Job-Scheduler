@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -229,9 +231,17 @@ func StartRabbitMQ(t *testing.T) *RabbitMQ {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
+	// Docker reassigns ephemeral host ports on stop/start; pin one so Restart
+	// keeps URL valid for brokers that must reconnect on their own.
+	hostPort := freeTCPPort(t)
 	ctr := startContainer(t, ctx, testcontainers.ContainerRequest{
 		Image:        "rabbitmq:4.1-alpine@sha256:cd4009416f83d7e5895020cd71b0963f3b8a4dfc3de74bbb6fb3bfe5f81f01e0",
 		ExposedPorts: []string{"5672/tcp"},
+		HostConfigModifier: func(hc *container.HostConfig) {
+			hc.PortBindings = network.PortMap{
+				network.MustParsePort("5672/tcp"): {{HostPort: strconv.Itoa(hostPort)}},
+			}
+		},
 		Env: map[string]string{
 			"RABBITMQ_DEFAULT_USER": "scheduler",
 			"RABBITMQ_DEFAULT_PASS": "scheduler",
@@ -248,6 +258,16 @@ func StartRabbitMQ(t *testing.T) *RabbitMQ {
 	}
 	u := url.URL{Scheme: "amqp", User: url.UserPassword("scheduler", "scheduler"), Host: net.JoinHostPort(host, port.Port()), Path: "/"}
 	return &RabbitMQ{Container: ctr, URL: u.String()}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve RabbitMQ host port: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 func startContainer(t *testing.T, ctx context.Context, req testcontainers.ContainerRequest) testcontainers.Container {

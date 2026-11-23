@@ -243,7 +243,7 @@ func TestRabbitMQ_PublishDeclaresDurableRouteAndRetainsDuplicateIDs(t *testing.T
 		t.Fatal("message IDs were deduplicated")
 	}
 	for _, p := range conn.ch.published {
-		if !p.mandatory || p.immediate || p.exchange != "jobs" || p.key != JobsRoutingKey ||
+		if !p.mandatory || p.immediate || p.exchange != "" || p.key != JobsRoutingKey ||
 			p.message.DeliveryMode != amqp.Persistent || p.message.ContentType != "application/json" || p.message.MessageId != "same-job" {
 			t.Fatalf("unsafe publication: %+v", p)
 		}
