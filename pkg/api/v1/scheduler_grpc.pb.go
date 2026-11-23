@@ -28,6 +28,9 @@ const (
 	SchedulerService_Dispatch_FullMethodName              = "/v1.SchedulerService/Dispatch"
 	SchedulerService_TriggerReconciliation_FullMethodName = "/v1.SchedulerService/TriggerReconciliation"
 	SchedulerService_RequeueDeadJob_FullMethodName        = "/v1.SchedulerService/RequeueDeadJob"
+	SchedulerService_ClaimJobExecution_FullMethodName     = "/v1.SchedulerService/ClaimJobExecution"
+	SchedulerService_RenewJobLease_FullMethodName         = "/v1.SchedulerService/RenewJobLease"
+	SchedulerService_GetExecutionJob_FullMethodName       = "/v1.SchedulerService/GetExecutionJob"
 )
 
 // SchedulerServiceClient is the client API for SchedulerService service.
@@ -56,6 +59,15 @@ type SchedulerServiceClient interface {
 	TriggerReconciliation(ctx context.Context, in *TriggerReconciliationRequest, opts ...grpc.CallOption) (*TriggerReconciliationResponse, error)
 	// RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
 	RequeueDeadJob(ctx context.Context, in *RequeueDeadJobRequest, opts ...grpc.CallOption) (*RequeueDeadJobResponse, error)
+	// ClaimJobExecution acknowledges an announcement's delivery and claims the
+	// announced attempt for a worker, minting its fencing token and lease.
+	// Workers have no database access; this is their only path to claim work.
+	ClaimJobExecution(ctx context.Context, in *ClaimJobExecutionRequest, opts ...grpc.CallOption) (*ClaimJobExecutionResponse, error)
+	// RenewJobLease extends a live lease held by the exact worker and token.
+	RenewJobLease(ctx context.Context, in *RenewJobLeaseRequest, opts ...grpc.CallOption) (*RenewJobLeaseResponse, error)
+	// GetExecutionJob returns job metadata (no payload) and lease state for one
+	// execution: the fencing token must match and any lease must be the caller's.
+	GetExecutionJob(ctx context.Context, in *GetExecutionJobRequest, opts ...grpc.CallOption) (*GetExecutionJobResponse, error)
 }
 
 type schedulerServiceClient struct {
@@ -156,6 +168,36 @@ func (c *schedulerServiceClient) RequeueDeadJob(ctx context.Context, in *Requeue
 	return out, nil
 }
 
+func (c *schedulerServiceClient) ClaimJobExecution(ctx context.Context, in *ClaimJobExecutionRequest, opts ...grpc.CallOption) (*ClaimJobExecutionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimJobExecutionResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_ClaimJobExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) RenewJobLease(ctx context.Context, in *RenewJobLeaseRequest, opts ...grpc.CallOption) (*RenewJobLeaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenewJobLeaseResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_RenewJobLease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) GetExecutionJob(ctx context.Context, in *GetExecutionJobRequest, opts ...grpc.CallOption) (*GetExecutionJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExecutionJobResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_GetExecutionJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SchedulerServiceServer is the server API for SchedulerService service.
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
@@ -182,6 +224,15 @@ type SchedulerServiceServer interface {
 	TriggerReconciliation(context.Context, *TriggerReconciliationRequest) (*TriggerReconciliationResponse, error)
 	// RequeueDeadJob gives a dead job another retry budget. ListJobs with DEAD lists candidates.
 	RequeueDeadJob(context.Context, *RequeueDeadJobRequest) (*RequeueDeadJobResponse, error)
+	// ClaimJobExecution acknowledges an announcement's delivery and claims the
+	// announced attempt for a worker, minting its fencing token and lease.
+	// Workers have no database access; this is their only path to claim work.
+	ClaimJobExecution(context.Context, *ClaimJobExecutionRequest) (*ClaimJobExecutionResponse, error)
+	// RenewJobLease extends a live lease held by the exact worker and token.
+	RenewJobLease(context.Context, *RenewJobLeaseRequest) (*RenewJobLeaseResponse, error)
+	// GetExecutionJob returns job metadata (no payload) and lease state for one
+	// execution: the fencing token must match and any lease must be the caller's.
+	GetExecutionJob(context.Context, *GetExecutionJobRequest) (*GetExecutionJobResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }
 
@@ -218,6 +269,15 @@ func (UnimplementedSchedulerServiceServer) TriggerReconciliation(context.Context
 }
 func (UnimplementedSchedulerServiceServer) RequeueDeadJob(context.Context, *RequeueDeadJobRequest) (*RequeueDeadJobResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequeueDeadJob not implemented")
+}
+func (UnimplementedSchedulerServiceServer) ClaimJobExecution(context.Context, *ClaimJobExecutionRequest) (*ClaimJobExecutionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ClaimJobExecution not implemented")
+}
+func (UnimplementedSchedulerServiceServer) RenewJobLease(context.Context, *RenewJobLeaseRequest) (*RenewJobLeaseResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RenewJobLease not implemented")
+}
+func (UnimplementedSchedulerServiceServer) GetExecutionJob(context.Context, *GetExecutionJobRequest) (*GetExecutionJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetExecutionJob not implemented")
 }
 func (UnimplementedSchedulerServiceServer) mustEmbedUnimplementedSchedulerServiceServer() {}
 func (UnimplementedSchedulerServiceServer) testEmbeddedByValue()                          {}
@@ -402,6 +462,60 @@ func _SchedulerService_RequeueDeadJob_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SchedulerService_ClaimJobExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimJobExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).ClaimJobExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_ClaimJobExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).ClaimJobExecution(ctx, req.(*ClaimJobExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_RenewJobLease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewJobLeaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).RenewJobLease(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_RenewJobLease_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).RenewJobLease(ctx, req.(*RenewJobLeaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_GetExecutionJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExecutionJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).GetExecutionJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_GetExecutionJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).GetExecutionJob(ctx, req.(*GetExecutionJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SchedulerService_ServiceDesc is the grpc.ServiceDesc for SchedulerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -444,6 +558,18 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequeueDeadJob",
 			Handler:    _SchedulerService_RequeueDeadJob_Handler,
+		},
+		{
+			MethodName: "ClaimJobExecution",
+			Handler:    _SchedulerService_ClaimJobExecution_Handler,
+		},
+		{
+			MethodName: "RenewJobLease",
+			Handler:    _SchedulerService_RenewJobLease_Handler,
+		},
+		{
+			MethodName: "GetExecutionJob",
+			Handler:    _SchedulerService_GetExecutionJob_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

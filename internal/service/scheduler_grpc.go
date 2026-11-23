@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // SchedulerServer implements apiv1.SchedulerServiceServer.
@@ -272,6 +273,82 @@ func (s *SchedulerServer) ReportJobCompletion(ctx context.Context, req *apiv1.Re
 		return nil, toGRPCError(err)
 	}
 	return &apiv1.ReportJobCompletionResponse{Acknowledged: true, DependentsUnlocked: int32(n)}, nil
+}
+
+// MaxWorkerLease bounds the lease a worker may request for one renewal period.
+const MaxWorkerLease = 10 * time.Minute
+
+func workerLease(ms int64) (time.Duration, error) {
+	if ms <= 0 || ms > MaxWorkerLease.Milliseconds() {
+		return 0, status.Error(codes.InvalidArgument, "lease_ttl_ms must be between 1 and 600000")
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func (s *SchedulerServer) ClaimJobExecution(ctx context.Context, req *apiv1.ClaimJobExecutionRequest) (*apiv1.ClaimJobExecutionResponse, error) {
+	id, err := uuid.Parse(req.JobId)
+	if err != nil || id == uuid.Nil || req.AttemptCount < 0 || req.FencingToken < 0 {
+		return nil, status.Error(codes.InvalidArgument, "invalid job announcement")
+	}
+	ttl, err := workerLease(req.LeaseTtlMs)
+	if err != nil {
+		return nil, err
+	}
+	// Record receipt before the dispatch check: canceling a dispatched job
+	// clears dispatched_at, and its announcement must still release the slot.
+	if err := s.sched.outbox.MarkDelivered(ctx, domain.DispatchID(id, int(req.AttemptCount), req.FencingToken)); err != nil {
+		return nil, toGRPCError(err)
+	}
+	// Workers may only claim work the scheduler has announced.
+	stored, err := s.sched.GetJob(ctx, id)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	if stored.DispatchedAt == nil {
+		return nil, status.Error(codes.FailedPrecondition, "job has not been dispatched")
+	}
+	announcement := &domain.Job{ID: id, AttemptCount: int(req.AttemptCount), FencingToken: req.FencingToken}
+	job, token, err := s.sched.ClaimExecution(ctx, announcement, req.WorkerId, ttl)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	return &apiv1.ClaimJobExecutionResponse{Job: DomainJobToProto(job), FencingToken: token}, nil
+}
+
+func (s *SchedulerServer) RenewJobLease(ctx context.Context, req *apiv1.RenewJobLeaseRequest) (*apiv1.RenewJobLeaseResponse, error) {
+	id, err := uuid.Parse(req.JobId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid job_id")
+	}
+	ttl, err := workerLease(req.LeaseTtlMs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.sched.jobs.RenewLease(ctx, id, req.WorkerId, req.FencingToken, ttl); err != nil {
+		return nil, toGRPCError(err)
+	}
+	return &apiv1.RenewJobLeaseResponse{}, nil
+}
+
+func (s *SchedulerServer) GetExecutionJob(ctx context.Context, req *apiv1.GetExecutionJobRequest) (*apiv1.GetExecutionJobResponse, error) {
+	id, err := uuid.Parse(req.JobId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid job_id")
+	}
+	job, err := s.sched.GetJob(ctx, id)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	// The shared worker credential must not read arbitrary jobs: only the
+	// execution that holds (or just released) this attempt may look it up.
+	if job.FencingToken != req.FencingToken || (job.LeaseOwner != nil && *job.LeaseOwner != req.WorkerId) {
+		return nil, toGRPCError(domain.ErrLeaseLost)
+	}
+	out := &apiv1.GetExecutionJobResponse{Job: DomainJobMetadataToProto(job), LeaseOwner: job.LeaseOwner}
+	if job.LeaseExpiresAt != nil {
+		out.LeaseExpiresAt = timestamppb.New(*job.LeaseExpiresAt)
+	}
+	return out, nil
 }
 
 func (s *SchedulerServer) Dispatch(ctx context.Context, req *apiv1.DispatchRequest) (*apiv1.DispatchResponse, error) {
