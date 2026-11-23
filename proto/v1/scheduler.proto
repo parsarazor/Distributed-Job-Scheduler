@@ -49,6 +49,49 @@ service SchedulerService {
   // GetExecutionJob returns job metadata (no payload) and lease state for one
   // execution: the fencing token must match and any lease must be the caller's.
   rpc GetExecutionJob(GetExecutionJobRequest) returns (GetExecutionJobResponse);
+
+  // Tenant administration (ADMIN_TOKEN). Raw API keys are returned only by
+  // CreateTenant and RotateTenantKey; the scheduler stores only their hash.
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+  // UpdateTenant changes the in-flight limit and disables or re-enables API access.
+  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
+  // RotateTenantKey replaces the API key; the old key stops working immediately.
+  rpc RotateTenantKey(RotateTenantKeyRequest) returns (RotateTenantKeyResponse);
+}
+
+message Tenant {
+  string id = 1;
+  string name = 2;
+  int32 max_in_flight = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp disabled_at = 5;
+}
+
+message CreateTenantRequest {
+  string name = 1;
+  // 0 uses the default (10).
+  int32 max_in_flight = 2;
+}
+message CreateTenantResponse {
+  Tenant tenant = 1;
+  string api_key = 2;
+}
+message ListTenantsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+message ListTenantsResponse { repeated Tenant tenants = 1; }
+message UpdateTenantRequest {
+  string tenant_id = 1;
+  optional int32 max_in_flight = 2;
+  optional bool disabled = 3;
+}
+message UpdateTenantResponse { Tenant tenant = 1; }
+message RotateTenantKeyRequest { string tenant_id = 1; }
+message RotateTenantKeyResponse {
+  Tenant tenant = 1;
+  string api_key = 2;
 }
 
 message SubmitJobRequest {

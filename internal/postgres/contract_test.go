@@ -764,3 +764,35 @@ func TestLive_ExtendRunningLeasesRevivesLapsedLease(t *testing.T) {
 		t.Fatalf("owner must complete after grace: %+v %v", done, err)
 	}
 }
+
+func TestLive_TenantUpdateAndList(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tn.APIKeyHash = domain.HashAPIKey("rotated-" + tn.ID.String())
+	tn.MaxInFlight = 77
+	tn.DisabledAt = &now
+	if err := r.Tenants.Update(ctx, tn); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Tenants.GetByAPIKeyHash(ctx, tn.APIKeyHash)
+	if err != nil || got.MaxInFlight != 77 || got.DisabledAt == nil || !got.DisabledAt.Equal(now) {
+		t.Fatalf("update round trip: %+v %v", got, err)
+	}
+	list, err := r.Tenants.List(ctx, 1000, 0)
+	found := false
+	for _, x := range list {
+		found = found || x.ID == tn.ID
+	}
+	if err != nil || !found {
+		t.Fatalf("list: found=%v err=%v", found, err)
+	}
+	missing := *tn
+	missing.ID = uuid.New()
+	if err := r.Tenants.Update(ctx, &missing); err != domain.ErrTenantNotFound {
+		t.Fatalf("unknown tenant: %v", err)
+	}
+}

@@ -51,6 +51,10 @@ var methodRoles = map[string]authRole{
 	apiv1.SchedulerService_GetExecutionJob_FullMethodName:       roleWorker,
 	apiv1.SchedulerService_Dispatch_FullMethodName:              roleAdmin,
 	apiv1.SchedulerService_TriggerReconciliation_FullMethodName: roleAdmin,
+	apiv1.SchedulerService_CreateTenant_FullMethodName:          roleAdmin,
+	apiv1.SchedulerService_ListTenants_FullMethodName:           roleAdmin,
+	apiv1.SchedulerService_UpdateTenant_FullMethodName:          roleAdmin,
+	apiv1.SchedulerService_RotateTenantKey_FullMethodName:       roleAdmin,
 	apiv1.WorkerService_Execute_FullMethodName:                  roleWorker,
 	apiv1.WorkerService_Heartbeat_FullMethodName:                roleWorker,
 	apiv1.WorkerService_GetWorkerStatus_FullMethodName:          roleAdmin,
@@ -114,6 +118,9 @@ func Authenticator(tenants repository.TenantRepository, workerToken string, admi
 				return nil, status.Error(codes.Unauthenticated, "invalid credential")
 			case err != nil || tenant == nil || tenant.ID == uuid.Nil:
 				return nil, status.Error(codes.Unavailable, "authentication unavailable")
+			}
+			if tenant.DisabledAt != nil {
+				return nil, status.Error(codes.PermissionDenied, "tenant is disabled")
 			}
 			who.tenant = tenant.ID
 		}

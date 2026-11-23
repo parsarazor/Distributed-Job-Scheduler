@@ -20,4 +20,11 @@ type TenantRepository interface {
 	// GetByAPIKeyHash retrieves a tenant matching a SHA-256 API key hash.
 	// Returns domain.ErrTenantNotFound if no match exists.
 	GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*domain.Tenant, error)
+
+	// List returns tenants ordered by creation time.
+	List(ctx context.Context, limit, offset int) ([]*domain.Tenant, error)
+
+	// Update writes the tenant's API key hash, in-flight limit and disabled
+	// state. Returns domain.ErrTenantNotFound if the tenant does not exist.
+	Update(ctx context.Context, tenant *domain.Tenant) error
 }

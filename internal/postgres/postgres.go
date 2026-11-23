@@ -52,7 +52,7 @@ func (p *Pool) Close() { p.pool.Close() }
 // Ping verifies connectivity.
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
-const SchemaVersion = 19
+const SchemaVersion = 20
 
 // CheckSchema rejects missing, partially applied or incompatible migrations.
 func (p *Pool) CheckSchema(ctx context.Context) error {
@@ -622,17 +622,48 @@ func (r *JobRepo) ExtendRunningLeases(ctx context.Context, grace time.Duration) 
 
 func (r *TenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
 	db := dbFromCtx(ctx, r.db)
-	_, err := db.Exec(ctx, `INSERT INTO tenants (id, name, api_key_hash, created_at, max_in_flight)
-		VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,
-		tenant.ID, tenant.Name, tenant.APIKeyHash, tenant.CreatedAt, tenant.InFlightLimit())
+	_, err := db.Exec(ctx, `INSERT INTO tenants (id, name, api_key_hash, created_at, max_in_flight, disabled_at)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING`,
+		tenant.ID, tenant.Name, tenant.APIKeyHash, tenant.CreatedAt, tenant.InFlightLimit(), tenant.DisabledAt)
 	return err
+}
+
+const tenantColumns = `id, name, api_key_hash, created_at, max_in_flight, disabled_at`
+
+func (r *TenantRepo) List(ctx context.Context, limit, offset int) ([]*domain.Tenant, error) {
+	rows, err := dbFromCtx(ctx, r.db).Query(ctx, `SELECT `+tenantColumns+` FROM tenants ORDER BY created_at, id LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Tenant
+	for rows.Next() {
+		var t domain.Tenant
+		if err := rows.Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight, &t.DisabledAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &t)
+	}
+	return out, rows.Err()
+}
+
+func (r *TenantRepo) Update(ctx context.Context, tenant *domain.Tenant) error {
+	tag, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE tenants SET api_key_hash=$2, max_in_flight=$3, disabled_at=$4 WHERE id=$1`,
+		tenant.ID, tenant.APIKeyHash, tenant.InFlightLimit(), tenant.DisabledAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrTenantNotFound
+	}
+	return nil
 }
 
 func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	db := dbFromCtx(ctx, r.db)
 	var t domain.Tenant
-	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at, max_in_flight FROM tenants WHERE id=$1`, id).
-		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight)
+	err := db.QueryRow(ctx, `SELECT `+tenantColumns+` FROM tenants WHERE id=$1`, id).
+		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight, &t.DisabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound
@@ -645,8 +676,8 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 func (r *TenantRepo) GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*domain.Tenant, error) {
 	db := dbFromCtx(ctx, r.db)
 	var t domain.Tenant
-	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at, max_in_flight FROM tenants WHERE api_key_hash=$1`, apiKeyHash).
-		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight)
+	err := db.QueryRow(ctx, `SELECT `+tenantColumns+` FROM tenants WHERE api_key_hash=$1`, apiKeyHash).
+		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight, &t.DisabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound
