@@ -73,7 +73,8 @@ Tenant admission is serialized in Postgres: at most 1,000 outstanding jobs and 6
 Tenants are managed through admin RPCs (`ADMIN_TOKEN`): `CreateTenant`, `ListTenants`, `UpdateTenant` and `RotateTenantKey`. The `schedctl` CLI (also in the image as `/bin/schedctl`) wraps them:
 
 ```sh
-export ADMIN_TOKEN=... SCHEDULER_ADDR=scheduler:50051   # SCHEDULER_INSECURE=1 for local plaintext
+export ADMIN_TOKEN=$(openssl rand -hex 32)              # Compose passes it to the scheduler; unset disables admin RPCs
+export SCHEDULER_ADDR=127.0.0.1:50051                    # SCHEDULER_INSECURE=1 for local plaintext
 schedctl tenant create -name acme -max-in-flight 40     # prints the API key once
 schedctl tenant list
 schedctl tenant update -id <tenant-id> -max-in-flight 100
