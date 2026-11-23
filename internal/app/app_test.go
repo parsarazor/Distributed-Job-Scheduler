@@ -127,12 +127,14 @@ func TestNewWorkerFromEnv_RequiresSchedulerAndRejectsDatabase(t *testing.T) {
 		"database credentials": {"DATABASE_URL": "postgres://scheduler:scheduler@db/scheduler", "SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/"},
 		"no scheduler":         {"RABBITMQ_URL": "amqp://u:p@q/"},
 		"no broker":            {"SCHEDULER_ADDR": "scheduler:50051"},
+		"lease too long":       {"SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/", "LEASE_TTL": "11m"},
+		"lease too short":      {"SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/", "LEASE_TTL": "100us"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("APP_ENV", "development")
 			t.Setenv("STORAGE", "")
 			t.Setenv("WORKER_TOKEN", "local-development-worker-token-change-me")
-			for _, key := range []string{"DATABASE_URL", "SCHEDULER_ADDR", "RABBITMQ_URL"} {
+			for _, key := range []string{"DATABASE_URL", "SCHEDULER_ADDR", "RABBITMQ_URL", "LEASE_TTL"} {
 				t.Setenv(key, env[key])
 			}
 			if deps, err := NewWorkerFromEnv(context.Background()); err == nil {

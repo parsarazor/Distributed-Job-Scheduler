@@ -275,11 +275,11 @@ func (s *SchedulerServer) ReportJobCompletion(ctx context.Context, req *apiv1.Re
 	return &apiv1.ReportJobCompletionResponse{Acknowledged: true, DependentsUnlocked: int32(n)}, nil
 }
 
-// maxWorkerLease bounds the lease a worker may request for one renewal period.
-const maxWorkerLease = 10 * time.Minute
+// MaxWorkerLease bounds the lease a worker may request for one renewal period.
+const MaxWorkerLease = 10 * time.Minute
 
 func workerLease(ms int64) (time.Duration, error) {
-	if ms <= 0 || ms > maxWorkerLease.Milliseconds() {
+	if ms <= 0 || ms > MaxWorkerLease.Milliseconds() {
 		return 0, status.Error(codes.InvalidArgument, "lease_ttl_ms must be between 1 and 600000")
 	}
 	return time.Duration(ms) * time.Millisecond, nil

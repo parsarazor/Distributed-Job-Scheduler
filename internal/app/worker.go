@@ -55,6 +55,9 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	if err != nil {
 		return nil, err
 	}
+	if limits.leaseTTL < time.Millisecond || limits.leaseTTL > service.MaxWorkerLease {
+		return nil, fmt.Errorf("LEASE_TTL must be between 1ms and %s for scheduler-backed workers", service.MaxWorkerLease)
+	}
 	transport, secure, err := schedulerTransport(cfg.development)
 	if err != nil {
 		return nil, err
