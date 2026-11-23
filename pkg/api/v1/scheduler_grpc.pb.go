@@ -31,6 +31,10 @@ const (
 	SchedulerService_ClaimJobExecution_FullMethodName     = "/v1.SchedulerService/ClaimJobExecution"
 	SchedulerService_RenewJobLease_FullMethodName         = "/v1.SchedulerService/RenewJobLease"
 	SchedulerService_GetExecutionJob_FullMethodName       = "/v1.SchedulerService/GetExecutionJob"
+	SchedulerService_CreateTenant_FullMethodName          = "/v1.SchedulerService/CreateTenant"
+	SchedulerService_ListTenants_FullMethodName           = "/v1.SchedulerService/ListTenants"
+	SchedulerService_UpdateTenant_FullMethodName          = "/v1.SchedulerService/UpdateTenant"
+	SchedulerService_RotateTenantKey_FullMethodName       = "/v1.SchedulerService/RotateTenantKey"
 )
 
 // SchedulerServiceClient is the client API for SchedulerService service.
@@ -68,6 +72,14 @@ type SchedulerServiceClient interface {
 	// GetExecutionJob returns job metadata (no payload) and lease state for one
 	// execution: the fencing token must match and any lease must be the caller's.
 	GetExecutionJob(ctx context.Context, in *GetExecutionJobRequest, opts ...grpc.CallOption) (*GetExecutionJobResponse, error)
+	// Tenant administration (ADMIN_TOKEN). Raw API keys are returned only by
+	// CreateTenant and RotateTenantKey; the scheduler stores only their hash.
+	CreateTenant(ctx context.Context, in *CreateTenantRequest, opts ...grpc.CallOption) (*CreateTenantResponse, error)
+	ListTenants(ctx context.Context, in *ListTenantsRequest, opts ...grpc.CallOption) (*ListTenantsResponse, error)
+	// UpdateTenant changes the in-flight limit and disables or re-enables API access.
+	UpdateTenant(ctx context.Context, in *UpdateTenantRequest, opts ...grpc.CallOption) (*UpdateTenantResponse, error)
+	// RotateTenantKey replaces the API key; the old key stops working immediately.
+	RotateTenantKey(ctx context.Context, in *RotateTenantKeyRequest, opts ...grpc.CallOption) (*RotateTenantKeyResponse, error)
 }
 
 type schedulerServiceClient struct {
@@ -198,6 +210,46 @@ func (c *schedulerServiceClient) GetExecutionJob(ctx context.Context, in *GetExe
 	return out, nil
 }
 
+func (c *schedulerServiceClient) CreateTenant(ctx context.Context, in *CreateTenantRequest, opts ...grpc.CallOption) (*CreateTenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTenantResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_CreateTenant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) ListTenants(ctx context.Context, in *ListTenantsRequest, opts ...grpc.CallOption) (*ListTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTenantsResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_ListTenants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) UpdateTenant(ctx context.Context, in *UpdateTenantRequest, opts ...grpc.CallOption) (*UpdateTenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateTenantResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_UpdateTenant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) RotateTenantKey(ctx context.Context, in *RotateTenantKeyRequest, opts ...grpc.CallOption) (*RotateTenantKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RotateTenantKeyResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_RotateTenantKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SchedulerServiceServer is the server API for SchedulerService service.
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
@@ -233,6 +285,14 @@ type SchedulerServiceServer interface {
 	// GetExecutionJob returns job metadata (no payload) and lease state for one
 	// execution: the fencing token must match and any lease must be the caller's.
 	GetExecutionJob(context.Context, *GetExecutionJobRequest) (*GetExecutionJobResponse, error)
+	// Tenant administration (ADMIN_TOKEN). Raw API keys are returned only by
+	// CreateTenant and RotateTenantKey; the scheduler stores only their hash.
+	CreateTenant(context.Context, *CreateTenantRequest) (*CreateTenantResponse, error)
+	ListTenants(context.Context, *ListTenantsRequest) (*ListTenantsResponse, error)
+	// UpdateTenant changes the in-flight limit and disables or re-enables API access.
+	UpdateTenant(context.Context, *UpdateTenantRequest) (*UpdateTenantResponse, error)
+	// RotateTenantKey replaces the API key; the old key stops working immediately.
+	RotateTenantKey(context.Context, *RotateTenantKeyRequest) (*RotateTenantKeyResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }
 
@@ -278,6 +338,18 @@ func (UnimplementedSchedulerServiceServer) RenewJobLease(context.Context, *Renew
 }
 func (UnimplementedSchedulerServiceServer) GetExecutionJob(context.Context, *GetExecutionJobRequest) (*GetExecutionJobResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetExecutionJob not implemented")
+}
+func (UnimplementedSchedulerServiceServer) CreateTenant(context.Context, *CreateTenantRequest) (*CreateTenantResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateTenant not implemented")
+}
+func (UnimplementedSchedulerServiceServer) ListTenants(context.Context, *ListTenantsRequest) (*ListTenantsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTenants not implemented")
+}
+func (UnimplementedSchedulerServiceServer) UpdateTenant(context.Context, *UpdateTenantRequest) (*UpdateTenantResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateTenant not implemented")
+}
+func (UnimplementedSchedulerServiceServer) RotateTenantKey(context.Context, *RotateTenantKeyRequest) (*RotateTenantKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RotateTenantKey not implemented")
 }
 func (UnimplementedSchedulerServiceServer) mustEmbedUnimplementedSchedulerServiceServer() {}
 func (UnimplementedSchedulerServiceServer) testEmbeddedByValue()                          {}
@@ -516,6 +588,78 @@ func _SchedulerService_GetExecutionJob_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SchedulerService_CreateTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).CreateTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_CreateTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).CreateTenant(ctx, req.(*CreateTenantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_ListTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTenantsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).ListTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_ListTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).ListTenants(ctx, req.(*ListTenantsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_UpdateTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).UpdateTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_UpdateTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).UpdateTenant(ctx, req.(*UpdateTenantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_RotateTenantKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RotateTenantKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).RotateTenantKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_RotateTenantKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).RotateTenantKey(ctx, req.(*RotateTenantKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SchedulerService_ServiceDesc is the grpc.ServiceDesc for SchedulerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -570,6 +714,22 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetExecutionJob",
 			Handler:    _SchedulerService_GetExecutionJob_Handler,
+		},
+		{
+			MethodName: "CreateTenant",
+			Handler:    _SchedulerService_CreateTenant_Handler,
+		},
+		{
+			MethodName: "ListTenants",
+			Handler:    _SchedulerService_ListTenants_Handler,
+		},
+		{
+			MethodName: "UpdateTenant",
+			Handler:    _SchedulerService_UpdateTenant_Handler,
+		},
+		{
+			MethodName: "RotateTenantKey",
+			Handler:    _SchedulerService_RotateTenantKey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

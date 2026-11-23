@@ -52,6 +52,7 @@ services:
       STORAGE: postgres
       APP_ENV: development
       WORKER_TOKEN: local-development-worker-token-change-me
+      ADMIN_TOKEN: local-development-admin-token-change-me
       DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
       RABBITMQ_URL: amqp://scheduler:scheduler@rabbitmq:5672/
       PORT: "50051"

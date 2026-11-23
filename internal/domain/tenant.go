@@ -28,6 +28,8 @@ type Tenant struct {
 	CreatedAt  time.Time `json:"created_at"`
 	// MaxInFlight caps the tenant's dispatched and running attempts.
 	MaxInFlight int `json:"max_in_flight"`
+	// DisabledAt, when set, makes the tenant's API key stop authenticating.
+	DisabledAt *time.Time `json:"disabled_at,omitempty"`
 }
 
 // HashAPIKey returns the hex-encoded SHA-256 of a raw API key.

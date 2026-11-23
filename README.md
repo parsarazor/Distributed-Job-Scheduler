@@ -68,6 +68,21 @@ The scheduler is the only service with database credentials. Workers are statele
 
 Tenant admission is serialized in Postgres: at most 1,000 outstanding jobs and 600 newly created jobs per minute per tenant. Dispatch rotates tenants using persisted turns, preserves priority within each tenant, and caps each tenant at `tenants.max_in_flight` (default 10) queued/running dispatched jobs. These limits apply across scheduler replicas. Canceled announcements are retired before publication. Published canceled announcements retain their backlog credits until receipt or broker expiry. Idempotent submission retries do not consume additional quota. Dependency validation reads metadata and limits chains to 128 jobs.
 
+## Tenant administration
+
+Tenants are managed through admin RPCs (`ADMIN_TOKEN`): `CreateTenant`, `ListTenants`, `UpdateTenant` and `RotateTenantKey`. The `schedctl` CLI (also in the image as `/bin/schedctl`) wraps them:
+
+```sh
+export ADMIN_TOKEN=... SCHEDULER_ADDR=scheduler:50051   # SCHEDULER_INSECURE=1 for local plaintext
+schedctl tenant create -name acme -max-in-flight 40     # prints the API key once
+schedctl tenant list
+schedctl tenant update -id <tenant-id> -max-in-flight 100
+schedctl tenant update -id <tenant-id> -disable          # -enable to restore
+schedctl tenant rotate-key -id <tenant-id>               # old key stops working immediately
+```
+
+Only the SHA-256 of each API key is stored, so a lost key is replaced by rotating it. Disabling blocks the tenant's key on every replica at once. Jobs already accepted keep running, so cancel them first if they must stop.
+
 ## Scheduler replicas
 
 Run two or more scheduler replicas against the same Postgres for availability. Every replica runs all background loops. Dispatch, outbox publication, retry recovery, lease reaping and retention claim rows with `FOR UPDATE SKIP LOCKED`, so replicas split the work and never process the same row twice. Tenant limits are enforced in Postgres and hold across replicas.

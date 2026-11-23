@@ -832,6 +832,50 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 	return &cp, nil
 }
 
+func (r *TenantRepo) List(ctx context.Context, limit, offset int) ([]*domain.Tenant, error) {
+	s := stateFromCtx(ctx, r.s)
+	if err := readLockContext(ctx, &s.mu); err != nil {
+		return nil, err
+	}
+	defer s.mu.RUnlock()
+	out := make([]*domain.Tenant, 0, len(s.tenants))
+	for _, t := range s.tenants {
+		cp := *t
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if limit > 0 && limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *TenantRepo) Update(ctx context.Context, tenant *domain.Tenant) error {
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	old, ok := s.tenants[tenant.ID]
+	if !ok {
+		return domain.ErrTenantNotFound
+	}
+	delete(s.byAPIKey, old.APIKeyHash)
+	cp := *tenant
+	s.tenants[tenant.ID] = &cp
+	s.byAPIKey[tenant.APIKeyHash] = tenant.ID
+	return nil
+}
+
 func (r *TenantRepo) GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*domain.Tenant, error) {
 	s := stateFromCtx(ctx, r.s)
 
