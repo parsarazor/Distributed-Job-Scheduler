@@ -122,6 +122,26 @@ func TestLoop_RecoversFromPanickingTick(t *testing.T) {
 	wg.Wait()
 }
 
+func TestWakeLoop_RunsOnWakeBeforeTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wake := make(chan struct{}, 1)
+	ran := make(chan struct{}, 1)
+	WakeLoop(ctx, &wg, time.Hour, wake, "wake-loop", func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	})
+	wake <- struct{}{}
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("wake signal did not run the loop")
+	}
+	cancel()
+	wg.Wait()
+}
+
 func TestNewWorkerFromEnv_RequiresSchedulerAndRejectsDatabase(t *testing.T) {
 	for name, env := range map[string]map[string]string{
 		"database credentials": {"DATABASE_URL": "postgres://scheduler:scheduler@db/scheduler", "SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/"},

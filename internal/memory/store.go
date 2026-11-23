@@ -477,9 +477,15 @@ func (r *JobRepo) GetUndispatchedJobsForUpdate(ctx context.Context, limit int) (
 			outstanding[j.TenantID]++
 		}
 	}
+	inFlightLimit := func(id uuid.UUID) int {
+		if t := s.tenants[id]; t != nil {
+			return t.InFlightLimit()
+		}
+		return domain.DefaultTenantMaxInFlight
+	}
 	now := time.Now().UTC()
 	for _, j := range s.jobs {
-		if outstanding[j.TenantID] >= 10 || j.DispatchedAt != nil || !s.isReady(j, now) {
+		if outstanding[j.TenantID] >= inFlightLimit(j.TenantID) || j.DispatchedAt != nil || !s.isReady(j, now) {
 			continue
 		}
 		groups[j.TenantID] = append(groups[j.TenantID], j)
@@ -488,7 +494,7 @@ func (r *JobRepo) GetUndispatchedJobsForUpdate(ctx context.Context, limit int) (
 	for tenant, group := range groups {
 		tenants = append(tenants, tenant)
 		sort.Slice(group, func(i, j int) bool { return readyBefore(group[i], group[j]) })
-		groups[tenant] = group[:min(len(group), 10-outstanding[tenant])]
+		groups[tenant] = group[:min(len(group), inFlightLimit(tenant)-outstanding[tenant])]
 	}
 	sort.Slice(tenants, func(i, j int) bool {
 		a, b := s.turns[tenants[i]], s.turns[tenants[j]]

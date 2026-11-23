@@ -562,6 +562,33 @@ func TestLive_TenantCreditsRecoverFromDeadLetteredAnnouncements(t *testing.T) {
 	}
 }
 
+func TestLive_DispatchHonorsTenantMaxInFlight(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	if _, err := p.pool.Exec(ctx, `UPDATE tenants SET max_in_flight=25 WHERE id=$1`, tn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Tenants.GetByID(ctx, tn.ID); err != nil || got.MaxInFlight != 25 {
+		t.Fatalf("tenant limit round trip: %+v %v", got, err)
+	}
+	for i := range 30 {
+		liveCreateJob(t, ctx, r, tn.ID, fmt.Sprintf("burst-%02d", i))
+	}
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, nil, nil)
+	if n, err := s.DispatchReady(ctx, 100); err != nil || n != 25 {
+		t.Fatalf("first dispatch = %d (err=%v), want the tenant's 25 slots", n, err)
+	}
+	if n, err := s.DispatchReady(ctx, 100); err != nil || n != 0 {
+		t.Fatalf("second dispatch = %d (err=%v), want 0 while every slot is held", n, err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE tenants SET max_in_flight=0 WHERE id=$1`, tn.ID); err == nil {
+		t.Fatal("max_in_flight=0 must violate the check constraint")
+	}
+}
+
 func TestLive_TerminalizePoisonPillAtDeadLetterCap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()

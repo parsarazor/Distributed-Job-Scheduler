@@ -216,6 +216,11 @@ func logSamplingState(name string, err error, failed *bool) {
 // A panic inside a single tick is recovered and logged so one bad tick
 // cannot crash the scheduler process; the loop keeps ticking.
 func Loop(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, name string, fn func(context.Context) error) {
+	WakeLoop(ctx, wg, interval, nil, name, fn)
+}
+
+// WakeLoop is Loop that also runs fn whenever wake fires.
+func WakeLoop(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, wake <-chan struct{}, name string, fn func(context.Context) error) {
 	wg.Go(func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -223,20 +228,24 @@ func Loop(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, name 
 			select {
 			case <-ctx.Done():
 				return
+			case <-wake:
 			case <-ticker.C:
-				func() {
-					defer func() {
-						if p := recover(); p != nil {
-							slog.Error(name+": tick panicked", "panic", p, "stack", string(debug.Stack()))
-						}
-					}()
-					runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-					defer cancel()
-					if err := fn(runCtx); err != nil && ctx.Err() == nil {
-						slog.Error(name, "error", err)
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						slog.Error(name+": tick panicked", "panic", p, "stack", string(debug.Stack()))
 					}
 				}()
-			}
+				runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				defer cancel()
+				if err := fn(runCtx); err != nil && ctx.Err() == nil {
+					slog.Error(name, "error", err)
+				}
+			}()
 		}
 	})
 }

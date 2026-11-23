@@ -52,7 +52,7 @@ func (p *Pool) Close() { p.pool.Close() }
 // Ping verifies connectivity.
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
-const SchemaVersion = 18
+const SchemaVersion = 19
 
 // CheckSchema rejects missing, partially applied or incompatible migrations.
 func (p *Pool) CheckSchema(ctx context.Context) error {
@@ -612,17 +612,17 @@ func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*
 
 func (r *TenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
 	db := dbFromCtx(ctx, r.db)
-	_, err := db.Exec(ctx, `INSERT INTO tenants (id, name, api_key_hash, created_at)
-		VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`,
-		tenant.ID, tenant.Name, tenant.APIKeyHash, tenant.CreatedAt)
+	_, err := db.Exec(ctx, `INSERT INTO tenants (id, name, api_key_hash, created_at, max_in_flight)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,
+		tenant.ID, tenant.Name, tenant.APIKeyHash, tenant.CreatedAt, tenant.InFlightLimit())
 	return err
 }
 
 func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	db := dbFromCtx(ctx, r.db)
 	var t domain.Tenant
-	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at FROM tenants WHERE id=$1`, id).
-		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt)
+	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at, max_in_flight FROM tenants WHERE id=$1`, id).
+		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound
@@ -635,8 +635,8 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 func (r *TenantRepo) GetByAPIKeyHash(ctx context.Context, apiKeyHash string) (*domain.Tenant, error) {
 	db := dbFromCtx(ctx, r.db)
 	var t domain.Tenant
-	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at FROM tenants WHERE api_key_hash=$1`, apiKeyHash).
-		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt)
+	err := db.QueryRow(ctx, `SELECT id, name, api_key_hash, created_at, max_in_flight FROM tenants WHERE api_key_hash=$1`, apiKeyHash).
+		Scan(&t.ID, &t.Name, &t.APIKeyHash, &t.CreatedAt, &t.MaxInFlight)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrTenantNotFound

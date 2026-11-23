@@ -28,9 +28,11 @@ type Deps struct {
 	Tx             repository.Transactor
 	Operations     repository.Operations
 	ReaperInterval time.Duration
-	SeedDemo       bool
-	checkSchema    func(context.Context) error
-	serverConfig   *serverConfig
+	// DispatchInterval bounds dispatch latency when no wake signal fires.
+	DispatchInterval time.Duration
+	SeedDemo         bool
+	checkSchema      func(context.Context) error
+	serverConfig     *serverConfig
 }
 
 // NewFromEnv validates configuration before connecting. Only STORAGE=memory
@@ -62,6 +64,10 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		return nil, err
 	}
 	reaperInterval, err := durationFromEnv("REAPER_INTERVAL", 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	dispatchInterval, err := durationFromEnv("DISPATCH_INTERVAL", 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +135,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	return &Deps{
 		Scheduler: sched, Worker: worker, Broker: bus,
 		Jobs: jobs, Tenants: tenants, Events: events, Outbox: outbox, Tx: tx,
-		Cleanup: cleanup, ReaperInterval: reaperInterval,
+		Cleanup: cleanup, ReaperInterval: reaperInterval, DispatchInterval: dispatchInterval,
 		Operations: ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,
 	}, nil
 }
