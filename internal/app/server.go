@@ -18,11 +18,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/keepalive"
 )
 
 // NewServer enables authenticated RPCs, TLS, tracing and bounded RPC sizes.
-func NewServer(deps *Deps, name string) (*grpc.Server, *RuntimeHealth, error) {
+func NewServer(deps *Deps, name string, extra ...grpc.ServerOption) (*grpc.Server, *RuntimeHealth, error) {
 	cfg := deps.serverConfig
 	if cfg == nil {
 		env, err := loadServerConfig(os.Getenv("STORAGE"))
@@ -38,8 +37,6 @@ func NewServer(deps *Deps, name string) (*grpc.Server, *RuntimeHealth, error) {
 		grpc.MaxHeaderListSize(16 << 10),
 		grpc.MaxConcurrentStreams(128),
 		grpc.ConnectionTimeout(5 * time.Second),
-		// Recycled connections make clients re-resolve, so new replicas get traffic.
-		grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: 5 * time.Minute, MaxConnectionAgeGrace: time.Minute}),
 		grpc.ChainUnaryInterceptor(service.Authenticator(deps.Tenants, cfg.workerToken, cfg.adminToken)),
 		grpc.StreamInterceptor(h.watchInterceptor),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
@@ -47,7 +44,7 @@ func NewServer(deps *Deps, name string) (*grpc.Server, *RuntimeHealth, error) {
 	if cfg.tls != nil {
 		options = append(options, grpc.Creds(credentials.NewTLS(cfg.tls)))
 	}
-	srv := grpc.NewServer(options...)
+	srv := grpc.NewServer(append(options, extra...)...)
 	healthpb.RegisterHealthServer(srv, h)
 	return srv, h, nil
 }

@@ -24,6 +24,8 @@ import (
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/telemetry"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 func main() {
@@ -65,7 +67,10 @@ func run(ctx context.Context) (runErr error) {
 		return fmt.Errorf("listen for gRPC: %w", err)
 	}
 	defer lis.Close()
-	grpcServer, health, err := app.NewServer(deps, apiv1.SchedulerService_ServiceDesc.ServiceName)
+	grpcServer, health, err := app.NewServer(deps, apiv1.SchedulerService_ServiceDesc.ServiceName,
+		// Recycled connections make clients re-resolve, so new replicas get
+		// traffic. Scheduler RPCs are short; the worker's DrainWorker is not.
+		grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: 5 * time.Minute, MaxConnectionAgeGrace: time.Minute}))
 	if err != nil {
 		return err
 	}
