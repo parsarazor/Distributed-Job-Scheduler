@@ -19,6 +19,3 @@ services:
   worker:
     environment:
       SCHEDULER_ADDR: scheduler-pool:50051
-    depends_on:
-      scheduler-2:
-        condition: service_healthy
