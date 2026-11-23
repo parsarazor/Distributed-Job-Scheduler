@@ -37,7 +37,7 @@ func NewServer(deps *Deps, name string, extra ...grpc.ServerOption) (*grpc.Serve
 		grpc.MaxHeaderListSize(16 << 10),
 		grpc.MaxConcurrentStreams(128),
 		grpc.ConnectionTimeout(5 * time.Second),
-		grpc.ChainUnaryInterceptor(service.Authenticator(deps.Tenants, cfg.workerToken, cfg.adminToken)),
+		grpc.ChainUnaryInterceptor(service.AuthenticatorWithWorkers(deps.Tenants, deps.WorkerCredentials, cfg.sharedWorkerToken(), cfg.adminToken)),
 		grpc.StreamInterceptor(h.watchInterceptor),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	}

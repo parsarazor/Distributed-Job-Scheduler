@@ -58,7 +58,34 @@ service SchedulerService {
   rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
   // RotateTenantKey replaces the API key; the old key stops working immediately.
   rpc RotateTenantKey(RotateTenantKeyRequest) returns (RotateTenantKeyResponse);
+
+  // Per-worker credentials (ADMIN_TOKEN). A token authenticates only RPCs
+  // whose worker_id equals the credential's worker_id. The raw token is
+  // returned once; create a second credential for the same worker to rotate.
+  rpc CreateWorkerCredential(CreateWorkerCredentialRequest) returns (CreateWorkerCredentialResponse);
+  rpc ListWorkerCredentials(ListWorkerCredentialsRequest) returns (ListWorkerCredentialsResponse);
+  rpc RevokeWorkerCredential(RevokeWorkerCredentialRequest) returns (RevokeWorkerCredentialResponse);
 }
+
+message WorkerCredential {
+  string id = 1;
+  string worker_id = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp revoked_at = 4;
+}
+
+message CreateWorkerCredentialRequest { string worker_id = 1; }
+message CreateWorkerCredentialResponse {
+  WorkerCredential credential = 1;
+  string token = 2;
+}
+message ListWorkerCredentialsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+message ListWorkerCredentialsResponse { repeated WorkerCredential credentials = 1; }
+message RevokeWorkerCredentialRequest { string credential_id = 1; }
+message RevokeWorkerCredentialResponse { WorkerCredential credential = 1; }
 
 message Tenant {
   string id = 1;

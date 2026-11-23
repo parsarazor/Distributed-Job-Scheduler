@@ -52,7 +52,7 @@ func (p *Pool) Close() { p.pool.Close() }
 // Ping verifies connectivity.
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
-const SchemaVersion = 20
+const SchemaVersion = 21
 
 // CheckSchema rejects missing, partially applied or incompatible migrations.
 func (p *Pool) CheckSchema(ctx context.Context) error {
@@ -95,6 +95,8 @@ type Repositories struct {
 	Events  *EventRepo
 	Outbox  *OutboxRepo
 	Tx      *Pool
+
+	WorkerCredentials *WorkerCredentialRepo
 }
 
 // NewRepositories builds all Postgres repositories over one pool.
@@ -105,6 +107,8 @@ func NewRepositories(p *Pool) *Repositories {
 		Events:  &EventRepo{db: p},
 		Outbox:  &OutboxRepo{db: p},
 		Tx:      p,
+
+		WorkerCredentials: &WorkerCredentialRepo{db: p},
 	}
 }
 

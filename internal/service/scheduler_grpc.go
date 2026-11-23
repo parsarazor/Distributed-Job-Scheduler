@@ -45,7 +45,7 @@ func toGRPCError(err error) error {
 		return status.Error(codes.AlreadyExists, "submission key already used for different input")
 	case errors.Is(err, domain.ErrTenantLimit):
 		return status.Error(codes.ResourceExhausted, "tenant quota or submission rate exceeded")
-	case errors.Is(err, domain.ErrJobNotFound), errors.Is(err, domain.ErrTenantNotFound):
+	case errors.Is(err, domain.ErrJobNotFound), errors.Is(err, domain.ErrTenantNotFound), errors.Is(err, domain.ErrWorkerCredentialNotFound):
 		return status.Error(codes.NotFound, "resource not found")
 	case errors.Is(err, domain.ErrPayloadExpired), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrJobCannotBeCancelled), errors.Is(err, domain.ErrDependencyCycle), errors.Is(err, domain.ErrDependencyNotMet), errors.Is(err, domain.ErrJobNotClaimable), errors.Is(err, domain.ErrMaxAttemptsReached):
 		return status.Error(codes.FailedPrecondition, "job operation precondition failed")
@@ -261,6 +261,9 @@ func (s *SchedulerServer) ReportJobCompletion(ctx context.Context, req *apiv1.Re
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid job_id")
 	}
+	if err := workerBound(ctx, req.WorkerId); err != nil {
+		return nil, err
+	}
 	message := ""
 	if req.FinalStatus == apiv1.JobStatus_JOB_STATUS_FAILED {
 		message = domain.SafeHandlerMessage(req.ErrorMessage)
@@ -289,6 +292,9 @@ func (s *SchedulerServer) ClaimJobExecution(ctx context.Context, req *apiv1.Clai
 	id, err := uuid.Parse(req.JobId)
 	if err != nil || id == uuid.Nil || req.AttemptCount < 0 || req.FencingToken < 0 {
 		return nil, status.Error(codes.InvalidArgument, "invalid job announcement")
+	}
+	if err := workerBound(ctx, req.WorkerId); err != nil {
+		return nil, err
 	}
 	ttl, err := workerLease(req.LeaseTtlMs)
 	if err != nil {
@@ -320,6 +326,9 @@ func (s *SchedulerServer) RenewJobLease(ctx context.Context, req *apiv1.RenewJob
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid job_id")
 	}
+	if err := workerBound(ctx, req.WorkerId); err != nil {
+		return nil, err
+	}
 	ttl, err := workerLease(req.LeaseTtlMs)
 	if err != nil {
 		return nil, err
@@ -334,6 +343,9 @@ func (s *SchedulerServer) GetExecutionJob(ctx context.Context, req *apiv1.GetExe
 	id, err := uuid.Parse(req.JobId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid job_id")
+	}
+	if err := workerBound(ctx, req.WorkerId); err != nil {
+		return nil, err
 	}
 	job, err := s.sched.GetJob(ctx, id)
 	if err != nil {

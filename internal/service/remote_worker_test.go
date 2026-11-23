@@ -28,7 +28,7 @@ import (
 func dialScheduler(t *testing.T, s *Scheduler, key string) apiv1.SchedulerServiceClient {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer(grpc.UnaryInterceptor(Authenticator(s.tenants, workerTestKey, adminTestKey)))
+	srv := grpc.NewServer(grpc.UnaryInterceptor(AuthenticatorWithWorkers(s.tenants, s.workerCreds, workerTestKey, adminTestKey)))
 	apiv1.RegisterSchedulerServiceServer(srv, NewSchedulerServer(s))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)

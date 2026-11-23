@@ -4,6 +4,9 @@
 //	schedctl tenant list
 //	schedctl tenant update -id ID [-max-in-flight N] [-disable | -enable]
 //	schedctl tenant rotate-key -id ID
+//	schedctl worker create -worker-id ID
+//	schedctl worker list
+//	schedctl worker revoke -id CREDENTIAL_ID
 //
 // SCHEDULER_ADDR (default 127.0.0.1:50051) and ADMIN_TOKEN select the target.
 // TLS is used unless SCHEDULER_INSECURE=1; SCHEDULER_CA_FILE adds a CA.
@@ -35,8 +38,8 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) < 2 || args[0] != "tenant" {
-		return errors.New("usage: schedctl tenant create|list|update|rotate-key [flags]")
+	if len(args) < 2 || (args[0] != "tenant" && args[0] != "worker") {
+		return errors.New("usage: schedctl tenant create|list|update|rotate-key | worker create|list|revoke [flags]")
 	}
 	fs := flag.NewFlagSet(args[1], flag.ContinueOnError)
 	name := fs.String("name", "", "tenant name (create)")
@@ -44,6 +47,7 @@ func run(args []string) error {
 	limit := fs.Int("max-in-flight", 0, "dispatched/running job limit")
 	disable := fs.Bool("disable", false, "block the tenant's API key")
 	enable := fs.Bool("enable", false, "unblock the tenant's API key")
+	workerID := fs.String("worker-id", "", "worker ID the credential is bound to (worker create)")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
@@ -59,6 +63,19 @@ func run(args []string) error {
 	fs.Visit(func(f *flag.Flag) { limitSet = limitSet || f.Name == "max-in-flight" })
 
 	var resp proto.Message
+	if args[0] == "worker" {
+		switch args[1] {
+		case "create":
+			resp, err = client.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: *workerID})
+		case "list":
+			resp, err = listAllWorkers(ctx, client)
+		case "revoke":
+			resp, err = client.RevokeWorkerCredential(ctx, &apiv1.RevokeWorkerCredentialRequest{CredentialId: *id})
+		default:
+			return fmt.Errorf("unknown worker command %q", args[1])
+		}
+		return printResponse(resp, err)
+	}
 	switch args[1] {
 	case "create":
 		resp, err = client.CreateTenant(ctx, &apiv1.CreateTenantRequest{Name: *name, MaxInFlight: int32(*limit)})
@@ -81,6 +98,10 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown tenant command %q", args[1])
 	}
+	return printResponse(resp, err)
+}
+
+func printResponse(resp proto.Message, err error) error {
 	if err != nil {
 		return err
 	}
@@ -90,6 +111,21 @@ func run(args []string) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+func listAllWorkers(ctx context.Context, client apiv1.SchedulerServiceClient) (*apiv1.ListWorkerCredentialsResponse, error) {
+	const page = 1000
+	all := &apiv1.ListWorkerCredentialsResponse{}
+	for {
+		resp, err := client.ListWorkerCredentials(ctx, &apiv1.ListWorkerCredentialsRequest{Limit: page, Offset: int32(len(all.Credentials))})
+		if err != nil {
+			return nil, err
+		}
+		all.Credentials = append(all.Credentials, resp.Credentials...)
+		if len(resp.Credentials) < page {
+			return all, nil
+		}
+	}
 }
 
 func listAll(ctx context.Context, client apiv1.SchedulerServiceClient) (*apiv1.ListTenantsResponse, error) {

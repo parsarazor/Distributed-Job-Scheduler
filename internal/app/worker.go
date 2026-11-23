@@ -82,6 +82,10 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		}
 	}
 	cleanups = append(cleanups, func() { _ = conn.Close() })
+	workerID := os.Getenv("WORKER_ID")
+	if workerID == "" {
+		workerID = "worker-1"
+	}
 	health := healthpb.NewHealthClient(conn)
 	scheduler := apiv1.NewSchedulerServiceClient(conn)
 	schedulerReady := func(ctx context.Context) error {
@@ -94,7 +98,7 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		}
 		// Health is public; probe a worker-role RPC so a rejected WORKER_TOKEN
 		// keeps the worker unready instead of failing every claim.
-		_, err = scheduler.GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: uuid.Nil.String()})
+		_, err = scheduler.GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: uuid.Nil.String(), WorkerId: workerID})
 		switch status.Code(err) {
 		case codes.OK, codes.NotFound, codes.Aborted:
 			return nil
@@ -114,10 +118,6 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		return nil, fmt.Errorf("connect RabbitMQ: %w", err)
 	}
 	cleanups = append(cleanups, func() { _ = rb.Close() })
-	workerID := os.Getenv("WORKER_ID")
-	if workerID == "" {
-		workerID = "worker-1"
-	}
 	control := service.NewRemoteJobControl(scheduler)
 	worker := service.NewRemoteWorker(workerID, control, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)

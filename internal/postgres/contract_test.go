@@ -796,3 +796,38 @@ func TestLive_TenantUpdateAndList(t *testing.T) {
 		t.Fatalf("unknown tenant: %v", err)
 	}
 }
+
+func TestLive_WorkerCredentials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	r := NewRepositories(openTestPool(t))
+	cred := &domain.WorkerCredential{ID: uuid.New(), WorkerID: "edge-" + uuid.NewString(), TokenHash: domain.HashAPIKey(uuid.NewString()), CreatedAt: time.Now().UTC()}
+	if err := r.WorkerCredentials.Create(ctx, cred); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.WorkerCredentials.GetByTokenHash(ctx, cred.TokenHash)
+	if err != nil || got.WorkerID != cred.WorkerID || got.RevokedAt != nil {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	first := time.Now().UTC().Truncate(time.Microsecond)
+	if got, err = r.WorkerCredentials.Revoke(ctx, cred.ID, first); err != nil || got.RevokedAt == nil || !got.RevokedAt.Equal(first) {
+		t.Fatalf("revoke: %+v %v", got, err)
+	}
+	if got, err = r.WorkerCredentials.Revoke(ctx, cred.ID, first.Add(time.Hour)); err != nil || !got.RevokedAt.Equal(first) {
+		t.Fatalf("second revoke must keep the first timestamp: %+v %v", got, err)
+	}
+	list, err := r.WorkerCredentials.List(ctx, 1000, 0)
+	found := false
+	for _, c := range list {
+		found = found || c.ID == cred.ID
+	}
+	if err != nil || !found {
+		t.Fatalf("list: found=%v err=%v", found, err)
+	}
+	if _, err := r.WorkerCredentials.GetByTokenHash(ctx, "missing"); err != domain.ErrWorkerCredentialNotFound {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err := r.WorkerCredentials.Revoke(ctx, uuid.New(), first); err != domain.ErrWorkerCredentialNotFound {
+		t.Fatalf("revoke missing: %v", err)
+	}
+}

@@ -61,6 +61,6 @@ SQL
     migrate_args=(-path=/migrations "-database=postgres://scheduler:scheduler@postgres:5432/$db?sslmode=disable")
     docker compose run --rm --no-deps migrate "${migrate_args[@]}" force "$baseline"
     docker compose run --rm --no-deps migrate "${migrate_args[@]}" up
-    test "$(psql_db "$db" -Atc 'SELECT version || chr(58) || dirty::text FROM schema_migrations')" = '20:false'
+    test "$(psql_db "$db" -Atc 'SELECT version || chr(58) || dirty::text FROM schema_migrations')" = '21:false'
     test "$(psql_db "$db" -Atc "SELECT count(*) FROM jobs JOIN tenants ON jobs.tenant_id=tenants.id JOIN job_outbox ON job_outbox.job_id=jobs.id WHERE tenants.name='legacy fixture' AND jobs.lease_expires_at IS NOT NULL AND job_outbox.published")" = 1
 done

@@ -32,34 +32,40 @@ const (
 type identity struct {
 	tenant uuid.UUID
 	role   authRole
+	// worker is the worker ID a per-worker credential is bound to; empty for
+	// the shared WORKER_TOKEN.
+	worker string
 }
 
 // Every RPC must be explicitly classified. New methods remain inaccessible
 // until their authorization policy is added here.
 var methodRoles = map[string]authRole{
-	"/grpc.health.v1.Health/Check":                              rolePublic,
-	"/grpc.health.v1.Health/List":                               rolePublic,
-	apiv1.SchedulerService_SubmitJob_FullMethodName:             roleTenant,
-	apiv1.SchedulerService_GetJob_FullMethodName:                roleTenant,
-	apiv1.SchedulerService_ListJobs_FullMethodName:              roleTenant,
-	apiv1.SchedulerService_CancelJob_FullMethodName:             roleTenant,
-	apiv1.SchedulerService_GetJobEvents_FullMethodName:          roleTenant,
-	apiv1.SchedulerService_RequeueDeadJob_FullMethodName:        roleTenant,
-	apiv1.SchedulerService_ReportJobCompletion_FullMethodName:   roleWorker,
-	apiv1.SchedulerService_ClaimJobExecution_FullMethodName:     roleWorker,
-	apiv1.SchedulerService_RenewJobLease_FullMethodName:         roleWorker,
-	apiv1.SchedulerService_GetExecutionJob_FullMethodName:       roleWorker,
-	apiv1.SchedulerService_Dispatch_FullMethodName:              roleAdmin,
-	apiv1.SchedulerService_TriggerReconciliation_FullMethodName: roleAdmin,
-	apiv1.SchedulerService_CreateTenant_FullMethodName:          roleAdmin,
-	apiv1.SchedulerService_ListTenants_FullMethodName:           roleAdmin,
-	apiv1.SchedulerService_UpdateTenant_FullMethodName:          roleAdmin,
-	apiv1.SchedulerService_RotateTenantKey_FullMethodName:       roleAdmin,
-	apiv1.WorkerService_Execute_FullMethodName:                  roleWorker,
-	apiv1.WorkerService_Heartbeat_FullMethodName:                roleWorker,
-	apiv1.WorkerService_GetWorkerStatus_FullMethodName:          roleAdmin,
-	apiv1.WorkerService_CancelExecution_FullMethodName:          roleAdmin,
-	apiv1.WorkerService_DrainWorker_FullMethodName:              roleAdmin,
+	"/grpc.health.v1.Health/Check":                               rolePublic,
+	"/grpc.health.v1.Health/List":                                rolePublic,
+	apiv1.SchedulerService_SubmitJob_FullMethodName:              roleTenant,
+	apiv1.SchedulerService_GetJob_FullMethodName:                 roleTenant,
+	apiv1.SchedulerService_ListJobs_FullMethodName:               roleTenant,
+	apiv1.SchedulerService_CancelJob_FullMethodName:              roleTenant,
+	apiv1.SchedulerService_GetJobEvents_FullMethodName:           roleTenant,
+	apiv1.SchedulerService_RequeueDeadJob_FullMethodName:         roleTenant,
+	apiv1.SchedulerService_ReportJobCompletion_FullMethodName:    roleWorker,
+	apiv1.SchedulerService_ClaimJobExecution_FullMethodName:      roleWorker,
+	apiv1.SchedulerService_RenewJobLease_FullMethodName:          roleWorker,
+	apiv1.SchedulerService_GetExecutionJob_FullMethodName:        roleWorker,
+	apiv1.SchedulerService_Dispatch_FullMethodName:               roleAdmin,
+	apiv1.SchedulerService_TriggerReconciliation_FullMethodName:  roleAdmin,
+	apiv1.SchedulerService_CreateTenant_FullMethodName:           roleAdmin,
+	apiv1.SchedulerService_ListTenants_FullMethodName:            roleAdmin,
+	apiv1.SchedulerService_UpdateTenant_FullMethodName:           roleAdmin,
+	apiv1.SchedulerService_RotateTenantKey_FullMethodName:        roleAdmin,
+	apiv1.SchedulerService_CreateWorkerCredential_FullMethodName: roleAdmin,
+	apiv1.SchedulerService_ListWorkerCredentials_FullMethodName:  roleAdmin,
+	apiv1.SchedulerService_RevokeWorkerCredential_FullMethodName: roleAdmin,
+	apiv1.WorkerService_Execute_FullMethodName:                   roleWorker,
+	apiv1.WorkerService_Heartbeat_FullMethodName:                 roleWorker,
+	apiv1.WorkerService_GetWorkerStatus_FullMethodName:           roleAdmin,
+	apiv1.WorkerService_CancelExecution_FullMethodName:           roleAdmin,
+	apiv1.WorkerService_DrainWorker_FullMethodName:               roleAdmin,
 }
 
 // Authenticator resolves tenant identity from a bearer API key. Worker control
@@ -68,6 +74,13 @@ var methodRoles = map[string]authRole{
 // Invalid API keys are negative-cached for a short TTL so a flood of bad
 // credentials cannot amplify into unbounded database load (review H2).
 func Authenticator(tenants repository.TenantRepository, workerToken string, adminToken ...string) grpc.UnaryServerInterceptor {
+	return AuthenticatorWithWorkers(tenants, nil, workerToken, adminToken...)
+}
+
+// AuthenticatorWithWorkers also accepts per-worker credentials (tokens with
+// workerTokenPrefix) from workers. An empty workerToken disables the shared
+// fleet token so only per-worker credentials authenticate workers.
+func AuthenticatorWithWorkers(tenants repository.TenantRepository, workers repository.WorkerCredentialRepository, workerToken string, adminToken ...string) grpc.UnaryServerInterceptor {
 	invalid := newNegativeKeyCache(4096, 5*time.Second)
 	var admin string
 	if len(adminToken) == 1 {
@@ -101,6 +114,24 @@ func Authenticator(tenants repository.TenantRepository, workerToken string, admi
 			who.role = roleWorker
 		case adminMatch:
 			who.role = roleAdmin
+		case workers != nil && strings.HasPrefix(key, workerTokenPrefix):
+			digest := domain.HashAPIKey(key)
+			if invalid.recent(digest) {
+				return nil, status.Error(codes.Unauthenticated, "invalid credential")
+			}
+			cred, err := workers.GetByTokenHash(ctx, digest)
+			switch {
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				return nil, toGRPCError(err)
+			case errors.Is(err, domain.ErrWorkerCredentialNotFound):
+				invalid.remember(digest)
+				return nil, status.Error(codes.Unauthenticated, "invalid credential")
+			case err != nil || cred == nil || cred.WorkerID == "":
+				return nil, status.Error(codes.Unavailable, "authentication unavailable")
+			case cred.RevokedAt != nil:
+				return nil, status.Error(codes.Unauthenticated, "worker credential revoked")
+			}
+			who.role, who.worker = roleWorker, cred.WorkerID
 		default:
 			if tenants == nil {
 				return nil, status.Error(codes.Unavailable, "authentication unavailable")
@@ -129,6 +160,19 @@ func Authenticator(tenants repository.TenantRepository, workerToken string, admi
 		}
 		return handler(context.WithValue(withoutBearerMetadata(ctx), identityKey{}, who), req)
 	}
+}
+
+// workerBound rejects a per-worker credential acting under another worker ID,
+// so one leaked token cannot renew or complete another worker's leases.
+func workerBound(ctx context.Context, workerID string) error {
+	who, ok := ctx.Value(identityKey{}).(identity)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if who.worker != "" && who.worker != workerID {
+		return status.Error(codes.PermissionDenied, "credential is bound to another worker_id")
+	}
+	return nil
 }
 
 // Business handlers and detached work must never inherit bearer credentials.

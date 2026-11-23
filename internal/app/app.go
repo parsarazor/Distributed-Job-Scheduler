@@ -17,17 +17,18 @@ import (
 
 // Deps bundles everything a binary needs.
 type Deps struct {
-	Scheduler      *service.Scheduler
-	Worker         *service.Worker
-	Broker         broker.Broker
-	Cleanup        func()
-	Jobs           repository.JobRepository
-	Tenants        repository.TenantRepository
-	Events         repository.JobEventRepository
-	Outbox         repository.OutboxRepository
-	Tx             repository.Transactor
-	Operations     repository.Operations
-	ReaperInterval time.Duration
+	Scheduler         *service.Scheduler
+	Worker            *service.Worker
+	Broker            broker.Broker
+	Cleanup           func()
+	Jobs              repository.JobRepository
+	Tenants           repository.TenantRepository
+	WorkerCredentials repository.WorkerCredentialRepository
+	Events            repository.JobEventRepository
+	Outbox            repository.OutboxRepository
+	Tx                repository.Transactor
+	Operations        repository.Operations
+	ReaperInterval    time.Duration
 	// DispatchInterval bounds dispatch latency when no wake signal fires.
 	DispatchInterval time.Duration
 	// LeaseRestartGrace extends lapsed leases at startup so workers that lost
@@ -81,6 +82,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	var (
 		jobs        repository.JobRepository
 		tenants     repository.TenantRepository
+		workerCreds repository.WorkerCredentialRepository
 		events      repository.JobEventRepository
 		outbox      repository.OutboxRepository
 		tx          repository.Transactor
@@ -97,6 +99,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		log.Print("WARNING: STORAGE=memory is for LOCAL DEVELOPMENT/TESTS ONLY; data and leases are process-private and not durable")
 		b := memory.NewBundle()
 		jobs, tenants, events, outbox, tx = b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx
+		workerCreds = b.WorkerCredentials
 		bus = broker.NewMemoryBroker()
 	} else {
 		pgConfig, err := parseDatabaseConfig(os.Getenv("DATABASE_URL"), cfg.development)
@@ -123,6 +126,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		}
 		repos := postgres.NewRepositories(p)
 		jobs, tenants, events, outbox, tx = repos.Jobs, repos.Tenants, repos.Events, repos.Outbox, repos.Tx
+		workerCreds = repos.WorkerCredentials
 		rb, err := broker.NewRabbitMQBrokerContext(ctx, rabbitURL, "jobs")
 		if err != nil {
 			cleanup()
@@ -132,6 +136,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 		bus = rb
 	}
 	sched := service.NewScheduler(jobs, tenants, events, outbox, tx, bus, nil)
+	sched.SetWorkerCredentials(workerCreds)
 	workerID := os.Getenv("WORKER_ID")
 	if workerID == "" {
 		workerID = "worker-1"
@@ -142,7 +147,7 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	ops := tx.(repository.Operations)
 	return &Deps{
 		Scheduler: sched, Worker: worker, Broker: bus,
-		Jobs: jobs, Tenants: tenants, Events: events, Outbox: outbox, Tx: tx,
+		Jobs: jobs, Tenants: tenants, WorkerCredentials: workerCreds, Events: events, Outbox: outbox, Tx: tx,
 		Cleanup: cleanup, ReaperInterval: reaperInterval, DispatchInterval: dispatchInterval,
 		LeaseRestartGrace: leaseRestartGrace,
 		Operations:        ops, SeedDemo: cfg.seedDemo, checkSchema: checkSchema, serverConfig: &cfg,

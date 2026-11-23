@@ -18,12 +18,14 @@ const (
 	MaxTenantPageSize = 1000
 )
 
-func newTenantKey() (string, error) {
+func newTenantKey() (string, error) { return randomToken(tenantKeyPrefix) }
+
+func randomToken(prefix string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return tenantKeyPrefix + base64.RawURLEncoding.EncodeToString(b), nil
+	return prefix + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func validInFlight(n int) bool { return n >= 1 && n <= domain.MaxTenantMaxInFlight }

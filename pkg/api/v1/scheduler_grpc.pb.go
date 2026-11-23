@@ -19,22 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SchedulerService_SubmitJob_FullMethodName             = "/v1.SchedulerService/SubmitJob"
-	SchedulerService_GetJob_FullMethodName                = "/v1.SchedulerService/GetJob"
-	SchedulerService_ListJobs_FullMethodName              = "/v1.SchedulerService/ListJobs"
-	SchedulerService_CancelJob_FullMethodName             = "/v1.SchedulerService/CancelJob"
-	SchedulerService_GetJobEvents_FullMethodName          = "/v1.SchedulerService/GetJobEvents"
-	SchedulerService_ReportJobCompletion_FullMethodName   = "/v1.SchedulerService/ReportJobCompletion"
-	SchedulerService_Dispatch_FullMethodName              = "/v1.SchedulerService/Dispatch"
-	SchedulerService_TriggerReconciliation_FullMethodName = "/v1.SchedulerService/TriggerReconciliation"
-	SchedulerService_RequeueDeadJob_FullMethodName        = "/v1.SchedulerService/RequeueDeadJob"
-	SchedulerService_ClaimJobExecution_FullMethodName     = "/v1.SchedulerService/ClaimJobExecution"
-	SchedulerService_RenewJobLease_FullMethodName         = "/v1.SchedulerService/RenewJobLease"
-	SchedulerService_GetExecutionJob_FullMethodName       = "/v1.SchedulerService/GetExecutionJob"
-	SchedulerService_CreateTenant_FullMethodName          = "/v1.SchedulerService/CreateTenant"
-	SchedulerService_ListTenants_FullMethodName           = "/v1.SchedulerService/ListTenants"
-	SchedulerService_UpdateTenant_FullMethodName          = "/v1.SchedulerService/UpdateTenant"
-	SchedulerService_RotateTenantKey_FullMethodName       = "/v1.SchedulerService/RotateTenantKey"
+	SchedulerService_SubmitJob_FullMethodName              = "/v1.SchedulerService/SubmitJob"
+	SchedulerService_GetJob_FullMethodName                 = "/v1.SchedulerService/GetJob"
+	SchedulerService_ListJobs_FullMethodName               = "/v1.SchedulerService/ListJobs"
+	SchedulerService_CancelJob_FullMethodName              = "/v1.SchedulerService/CancelJob"
+	SchedulerService_GetJobEvents_FullMethodName           = "/v1.SchedulerService/GetJobEvents"
+	SchedulerService_ReportJobCompletion_FullMethodName    = "/v1.SchedulerService/ReportJobCompletion"
+	SchedulerService_Dispatch_FullMethodName               = "/v1.SchedulerService/Dispatch"
+	SchedulerService_TriggerReconciliation_FullMethodName  = "/v1.SchedulerService/TriggerReconciliation"
+	SchedulerService_RequeueDeadJob_FullMethodName         = "/v1.SchedulerService/RequeueDeadJob"
+	SchedulerService_ClaimJobExecution_FullMethodName      = "/v1.SchedulerService/ClaimJobExecution"
+	SchedulerService_RenewJobLease_FullMethodName          = "/v1.SchedulerService/RenewJobLease"
+	SchedulerService_GetExecutionJob_FullMethodName        = "/v1.SchedulerService/GetExecutionJob"
+	SchedulerService_CreateTenant_FullMethodName           = "/v1.SchedulerService/CreateTenant"
+	SchedulerService_ListTenants_FullMethodName            = "/v1.SchedulerService/ListTenants"
+	SchedulerService_UpdateTenant_FullMethodName           = "/v1.SchedulerService/UpdateTenant"
+	SchedulerService_RotateTenantKey_FullMethodName        = "/v1.SchedulerService/RotateTenantKey"
+	SchedulerService_CreateWorkerCredential_FullMethodName = "/v1.SchedulerService/CreateWorkerCredential"
+	SchedulerService_ListWorkerCredentials_FullMethodName  = "/v1.SchedulerService/ListWorkerCredentials"
+	SchedulerService_RevokeWorkerCredential_FullMethodName = "/v1.SchedulerService/RevokeWorkerCredential"
 )
 
 // SchedulerServiceClient is the client API for SchedulerService service.
@@ -80,6 +83,12 @@ type SchedulerServiceClient interface {
 	UpdateTenant(ctx context.Context, in *UpdateTenantRequest, opts ...grpc.CallOption) (*UpdateTenantResponse, error)
 	// RotateTenantKey replaces the API key; the old key stops working immediately.
 	RotateTenantKey(ctx context.Context, in *RotateTenantKeyRequest, opts ...grpc.CallOption) (*RotateTenantKeyResponse, error)
+	// Per-worker credentials (ADMIN_TOKEN). A token authenticates only RPCs
+	// whose worker_id equals the credential's worker_id. The raw token is
+	// returned once; create a second credential for the same worker to rotate.
+	CreateWorkerCredential(ctx context.Context, in *CreateWorkerCredentialRequest, opts ...grpc.CallOption) (*CreateWorkerCredentialResponse, error)
+	ListWorkerCredentials(ctx context.Context, in *ListWorkerCredentialsRequest, opts ...grpc.CallOption) (*ListWorkerCredentialsResponse, error)
+	RevokeWorkerCredential(ctx context.Context, in *RevokeWorkerCredentialRequest, opts ...grpc.CallOption) (*RevokeWorkerCredentialResponse, error)
 }
 
 type schedulerServiceClient struct {
@@ -250,6 +259,36 @@ func (c *schedulerServiceClient) RotateTenantKey(ctx context.Context, in *Rotate
 	return out, nil
 }
 
+func (c *schedulerServiceClient) CreateWorkerCredential(ctx context.Context, in *CreateWorkerCredentialRequest, opts ...grpc.CallOption) (*CreateWorkerCredentialResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateWorkerCredentialResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_CreateWorkerCredential_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) ListWorkerCredentials(ctx context.Context, in *ListWorkerCredentialsRequest, opts ...grpc.CallOption) (*ListWorkerCredentialsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWorkerCredentialsResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_ListWorkerCredentials_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *schedulerServiceClient) RevokeWorkerCredential(ctx context.Context, in *RevokeWorkerCredentialRequest, opts ...grpc.CallOption) (*RevokeWorkerCredentialResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeWorkerCredentialResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_RevokeWorkerCredential_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SchedulerServiceServer is the server API for SchedulerService service.
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
@@ -293,6 +332,12 @@ type SchedulerServiceServer interface {
 	UpdateTenant(context.Context, *UpdateTenantRequest) (*UpdateTenantResponse, error)
 	// RotateTenantKey replaces the API key; the old key stops working immediately.
 	RotateTenantKey(context.Context, *RotateTenantKeyRequest) (*RotateTenantKeyResponse, error)
+	// Per-worker credentials (ADMIN_TOKEN). A token authenticates only RPCs
+	// whose worker_id equals the credential's worker_id. The raw token is
+	// returned once; create a second credential for the same worker to rotate.
+	CreateWorkerCredential(context.Context, *CreateWorkerCredentialRequest) (*CreateWorkerCredentialResponse, error)
+	ListWorkerCredentials(context.Context, *ListWorkerCredentialsRequest) (*ListWorkerCredentialsResponse, error)
+	RevokeWorkerCredential(context.Context, *RevokeWorkerCredentialRequest) (*RevokeWorkerCredentialResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }
 
@@ -350,6 +395,15 @@ func (UnimplementedSchedulerServiceServer) UpdateTenant(context.Context, *Update
 }
 func (UnimplementedSchedulerServiceServer) RotateTenantKey(context.Context, *RotateTenantKeyRequest) (*RotateTenantKeyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RotateTenantKey not implemented")
+}
+func (UnimplementedSchedulerServiceServer) CreateWorkerCredential(context.Context, *CreateWorkerCredentialRequest) (*CreateWorkerCredentialResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateWorkerCredential not implemented")
+}
+func (UnimplementedSchedulerServiceServer) ListWorkerCredentials(context.Context, *ListWorkerCredentialsRequest) (*ListWorkerCredentialsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListWorkerCredentials not implemented")
+}
+func (UnimplementedSchedulerServiceServer) RevokeWorkerCredential(context.Context, *RevokeWorkerCredentialRequest) (*RevokeWorkerCredentialResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RevokeWorkerCredential not implemented")
 }
 func (UnimplementedSchedulerServiceServer) mustEmbedUnimplementedSchedulerServiceServer() {}
 func (UnimplementedSchedulerServiceServer) testEmbeddedByValue()                          {}
@@ -660,6 +714,60 @@ func _SchedulerService_RotateTenantKey_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SchedulerService_CreateWorkerCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateWorkerCredentialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).CreateWorkerCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_CreateWorkerCredential_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).CreateWorkerCredential(ctx, req.(*CreateWorkerCredentialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_ListWorkerCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWorkerCredentialsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).ListWorkerCredentials(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_ListWorkerCredentials_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).ListWorkerCredentials(ctx, req.(*ListWorkerCredentialsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SchedulerService_RevokeWorkerCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeWorkerCredentialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).RevokeWorkerCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_RevokeWorkerCredential_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).RevokeWorkerCredential(ctx, req.(*RevokeWorkerCredentialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SchedulerService_ServiceDesc is the grpc.ServiceDesc for SchedulerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -730,6 +838,18 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RotateTenantKey",
 			Handler:    _SchedulerService_RotateTenantKey_Handler,
+		},
+		{
+			MethodName: "CreateWorkerCredential",
+			Handler:    _SchedulerService_CreateWorkerCredential_Handler,
+		},
+		{
+			MethodName: "ListWorkerCredentials",
+			Handler:    _SchedulerService_ListWorkerCredentials_Handler,
+		},
+		{
+			MethodName: "RevokeWorkerCredential",
+			Handler:    _SchedulerService_RevokeWorkerCredential_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

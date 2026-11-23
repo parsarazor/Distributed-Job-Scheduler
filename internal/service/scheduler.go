@@ -25,11 +25,13 @@ import (
 type Scheduler struct {
 	jobs    repository.JobRepository
 	tenants repository.TenantRepository
-	events  repository.JobEventRepository
-	outbox  repository.OutboxRepository
-	tx      repository.Transactor
-	bus     broker.Broker
-	backoff domain.BackoffStrategy
+	// workerCreds backs the worker credential admin RPCs; nil disables them.
+	workerCreds repository.WorkerCredentialRepository
+	events      repository.JobEventRepository
+	outbox      repository.OutboxRepository
+	tx          repository.Transactor
+	bus         broker.Broker
+	backoff     domain.BackoffStrategy
 	// ReconcileThreshold is the minimum age of an outbox row before the
 	// publisher picks it up. The default of zero publishes ready work immediately.
 	ReconcileThreshold time.Duration

@@ -84,6 +84,18 @@ schedctl tenant rotate-key -id <tenant-id>               # old key stops working
 
 Only the SHA-256 of each API key is stored, so a lost key is replaced by rotating it. Disabling blocks the tenant's key on every replica at once. Jobs already accepted keep running, so cancel them first if they must stop.
 
+## Worker credentials
+
+Each worker can have its own token instead of the shared `WORKER_TOKEN`. A per-worker token only works for RPCs whose `worker_id` equals the `WORKER_ID` it was issued for, so a leaked token cannot renew or complete another worker's leases. Revoking one takes effect on every replica immediately.
+
+```sh
+schedctl worker create -worker-id edge-1        # prints the token once; set it as that worker's WORKER_TOKEN
+schedctl worker list
+schedctl worker revoke -id <credential-id>
+```
+
+To rotate a token with no downtime, create a second credential for the same worker ID, deploy it, then revoke the old one. Once every worker has its own token, set `SHARED_WORKER_TOKEN=disabled` on the schedulers so the fleet-wide token stops working for scheduler RPCs. The schedulers must still have `WORKER_TOKEN` set, because startup requires it.
+
 ## Scheduler replicas
 
 Run two or more scheduler replicas against the same Postgres for availability. Every replica runs all background loops. Dispatch, outbox publication, retry recovery, lease reaping and retention claim rows with `FOR UPDATE SKIP LOCKED`, so replicas split the work and never process the same row twice. Tenant limits are enforced in Postgres and hold across replicas.

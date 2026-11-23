@@ -24,6 +24,16 @@ type serverConfig struct {
 	adminToken  string
 	tls         *tls.Config
 	seedDemo    bool
+	// noSharedWorkerToken stops the scheduler accepting WORKER_TOKEN from
+	// workers once every worker uses a per-worker credential.
+	noSharedWorkerToken bool
+}
+
+func (c serverConfig) sharedWorkerToken() string {
+	if c.noSharedWorkerToken {
+		return ""
+	}
+	return c.workerToken
 }
 
 func loadServerConfig(storage string) (serverConfig, error) {
@@ -37,6 +47,13 @@ func loadServerConfig(storage string) (serverConfig, error) {
 	}
 	if storage == "memory" && !cfg.development {
 		return cfg, fmt.Errorf("STORAGE=memory requires APP_ENV=development")
+	}
+	switch os.Getenv("SHARED_WORKER_TOKEN") {
+	case "", "enabled":
+	case "disabled":
+		cfg.noSharedWorkerToken = true
+	default:
+		return cfg, fmt.Errorf("SHARED_WORKER_TOKEN must be enabled or disabled")
 	}
 	switch os.Getenv("DEMO_SEED") {
 	case "", "false":

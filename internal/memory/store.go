@@ -34,6 +34,8 @@ type Bundle struct {
 	Events  *EventRepo
 	Outbox  *OutboxRepo
 	Tx      *Transactor
+
+	WorkerCredentials *WorkerCredentialRepo
 }
 
 // NewBundle creates an empty in-memory backend.
@@ -52,6 +54,8 @@ func NewBundle() *Bundle {
 		Events:  &EventRepo{s: s},
 		Outbox:  &OutboxRepo{s: s},
 		Tx:      &Transactor{s: s},
+
+		WorkerCredentials: NewWorkerCredentialRepo(),
 	}
 }
 
