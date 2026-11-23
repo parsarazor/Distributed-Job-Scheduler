@@ -78,6 +78,11 @@ func run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("listen for operations HTTP: %w", err)
 	}
+	if n, err := deps.Scheduler.GrantLeaseGrace(runCtx, deps.LeaseRestartGrace); err != nil {
+		slog.Error("lease restart grace", "error", err)
+	} else if n > 0 {
+		slog.Info("extended lapsed leases after restart", "leases", n, "grace", deps.LeaseRestartGrace)
+	}
 	var loops sync.WaitGroup
 	app.WakeLoop(runCtx, &loops, deps.DispatchInterval, deps.Scheduler.DispatchWake(), "dispatch", func(ctx context.Context) error { _, err := deps.Scheduler.DispatchReady(ctx, 100); return err })
 	app.WakeLoop(runCtx, &loops, time.Second, deps.Scheduler.PublishWake(), "outbox", func(ctx context.Context) error { _, err := deps.Scheduler.ReconcileOutbox(ctx, 100); return err })

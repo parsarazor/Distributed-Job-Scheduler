@@ -99,9 +99,9 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 	telemetry.Latency.Observe(time.Since(started).Seconds())
 
 	// Finalization has its own bounded budget so cancellation can still persist a
-	// failed attempt. Each database operation is shorter than a lease interval;
-	// successful handlers retain heartbeat renewal between retries.
-	completionCtx, stopCompletion := context.WithTimeout(traceOnlyContext(base), 5*time.Second)
+	// failed attempt and a finished result survives a short scheduler outage.
+	// Each call is shorter than a lease interval; heartbeats keep renewing.
+	completionCtx, stopCompletion := context.WithTimeout(traceOnlyContext(base), w.completionWait)
 	defer stopCompletion()
 	if err := a.gate.Acquire(completionCtx, 1); err != nil {
 		return true, err
@@ -168,7 +168,7 @@ func handlerResult(err error) (final domain.JobStatus, message, kind string) {
 
 func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final domain.JobStatus, msg string) error {
 	var lastErr error
-	for tries := 0; tries < 6; tries++ {
+	for tries := 0; ; tries++ {
 		if err := a.gate.Acquire(ctx, 1); err != nil {
 			return err
 		}
@@ -198,7 +198,7 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 			a.gate.Release(1)
 			return domain.ErrLeaseLost
 		}
-		opCtx, cancel := context.WithDeadline(ctx, minTime(a.deadline, time.Now().Add(min(w.leaseTTL/3, time.Second))))
+		opCtx, cancel := context.WithTimeout(ctx, max(min(w.leaseTTL/3, time.Second), time.Millisecond))
 		lastErr = w.ctl.ReportCompletion(opCtx, a.info.JobID, w.id, final, a.info.FencingToken, msg)
 		cancel()
 		if lastErr == nil {
@@ -207,11 +207,10 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 			return nil
 		}
 		a.gate.Release(1)
-		if !waitCompletionRetry(ctx, min((25*time.Millisecond)<<tries, w.leaseTTL/6)) {
-			return ctx.Err()
+		if !waitCompletionRetry(ctx, min((25*time.Millisecond)<<min(tries, 6), time.Second)) {
+			return errors.Join(lastErr, ctx.Err())
 		}
 	}
-	return lastErr
 }
 
 func completionObserved(job *domain.Job, token int64, attempt int, final domain.JobStatus) bool {
@@ -222,13 +221,6 @@ func completionObserved(job *domain.Job, token int64, attempt int, final domain.
 		return job.Status == domain.StatusSucceeded && job.AttemptCount == attempt
 	}
 	return (job.Status == domain.StatusPending || job.Status == domain.StatusDead) && job.AttemptCount == attempt+1
-}
-
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }
 
 func waitCompletionRetry(ctx context.Context, delay time.Duration) bool {
@@ -244,13 +236,14 @@ func waitCompletionRetry(ctx context.Context, delay time.Duration) bool {
 
 func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
 	interval := max(w.leaseTTL/3, time.Nanosecond)
+	next := interval
 	for {
 		if err := a.gate.Acquire(ctx, 1); err != nil {
 			return
 		}
 		remaining := time.Until(a.deadline)
 		finished := a.finished || a.leaseLost
-		if remaining <= 0 && !finished {
+		if remaining <= 0 && !finished && !a.completing {
 			a.leaseLost = true
 			a.cancel(domain.ErrLeaseLost)
 		}
@@ -258,7 +251,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
 		if finished || remaining <= 0 {
 			return
 		}
-		t := time.NewTimer(min(interval, remaining))
+		t := time.NewTimer(min(next, remaining))
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -267,10 +260,13 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
 			t.Stop()
 			return
 		case <-t.C:
+			next = interval
 			if err := w.renewLease(ctx, a, true); err != nil {
 				if errors.Is(err, domain.ErrLeaseLost) || a.ctx.Err() != nil {
 					return
 				}
+				// Transient failure: retry well before the local deadline.
+				next = max(interval/4, time.Millisecond)
 				if ctx.Err() == nil {
 					slog.Warn("renew job lease failed", "worker_id", w.id, "job_id", a.info.JobID)
 				}
@@ -288,6 +284,9 @@ func (w *Worker) renewLease(ctx context.Context, a *activeJob, automatic bool) e
 		return domain.ErrLeaseLost
 	}
 	if !time.Now().Before(a.deadline) {
+		if a.completing {
+			return context.DeadlineExceeded // the server decides the reported result
+		}
 		a.leaseLost = true
 		a.cancel(domain.ErrLeaseLost)
 		return domain.ErrLeaseLost
@@ -300,7 +299,10 @@ func (w *Worker) renewLease(ctx context.Context, a *activeJob, automatic bool) e
 	if a.ctx.Err() != nil {
 		return domain.ErrLeaseLost
 	}
-	if errors.Is(err, domain.ErrLeaseLost) || (err != nil && ctx.Err() == nil) || !time.Now().Before(a.deadline) {
+	// A transient error (scheduler restarting, network blip) keeps the
+	// handler running until the local deadline, which never outlives the
+	// stored lease. Only a fencing rejection or that deadline loses it.
+	if errors.Is(err, domain.ErrLeaseLost) || (!time.Now().Before(a.deadline) && !a.completing) {
 		a.leaseLost = true
 		a.cancel(domain.ErrLeaseLost)
 		return domain.ErrLeaseLost

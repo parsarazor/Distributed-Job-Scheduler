@@ -33,6 +33,7 @@ type Worker struct {
 	draining       bool
 	startedAt      time.Time
 	jobTimeout     time.Duration
+	completionWait time.Duration
 	intakeCancel   context.CancelFunc
 	lifetime       context.Context
 	stop           context.CancelCauseFunc
@@ -61,6 +62,19 @@ func NewRemoteWorker(id string, ctl JobControl, maxConcurrency int64, leaseTTL t
 	return newWorker(id, nil, ctl, maxConcurrency, leaseTTL)
 }
 
+// DefaultCompletionWindow is how long a finished handler's result is retried
+// while the scheduler is unreachable.
+const DefaultCompletionWindow = time.Minute
+
+// SetCompletionWindow bounds completion retries after the handler returns.
+// Nonpositive values select DefaultCompletionWindow.
+func (w *Worker) SetCompletionWindow(d time.Duration) {
+	if d <= 0 {
+		d = DefaultCompletionWindow
+	}
+	w.completionWait = d
+}
+
 func newWorker(id string, sched *Scheduler, ctl JobControl, maxConcurrency int64, leaseTTL time.Duration) *Worker {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 10
@@ -73,9 +87,10 @@ func newWorker(id string, sched *Scheduler, ctl JobControl, maxConcurrency int64
 		id: id, sched: sched, ctl: ctl, leaseTTL: leaseTTL,
 		sem: semaphore.NewWeighted(maxConcurrency), maxConcurrency: maxConcurrency,
 		handlers: make(map[string]Handler), active: make(map[uuid.UUID]*activeJob),
-		startedAt:  time.Now().UTC(),
-		jobTimeout: 5 * time.Minute,
-		lifetime:   lifetime, stop: stop,
+		startedAt:      time.Now().UTC(),
+		jobTimeout:     5 * time.Minute,
+		completionWait: DefaultCompletionWindow,
+		lifetime:       lifetime, stop: stop,
 	}
 }
 
