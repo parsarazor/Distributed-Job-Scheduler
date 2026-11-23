@@ -55,15 +55,18 @@ func run(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	limitSet := false
+	fs.Visit(func(f *flag.Flag) { limitSet = limitSet || f.Name == "max-in-flight" })
+
 	var resp proto.Message
 	switch args[1] {
 	case "create":
 		resp, err = client.CreateTenant(ctx, &apiv1.CreateTenantRequest{Name: *name, MaxInFlight: int32(*limit)})
 	case "list":
-		resp, err = client.ListTenants(ctx, &apiv1.ListTenantsRequest{Limit: 1000})
+		resp, err = listAll(ctx, client)
 	case "update":
 		req := &apiv1.UpdateTenantRequest{TenantId: *id}
-		if *limit != 0 {
+		if limitSet {
 			req.MaxInFlight = proto.Int32(int32(*limit))
 		}
 		switch {
@@ -87,6 +90,21 @@ func run(args []string) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+func listAll(ctx context.Context, client apiv1.SchedulerServiceClient) (*apiv1.ListTenantsResponse, error) {
+	const page = 1000
+	all := &apiv1.ListTenantsResponse{}
+	for {
+		resp, err := client.ListTenants(ctx, &apiv1.ListTenantsRequest{Limit: page, Offset: int32(len(all.Tenants))})
+		if err != nil {
+			return nil, err
+		}
+		all.Tenants = append(all.Tenants, resp.Tenants...)
+		if len(resp.Tenants) < page {
+			return all, nil
+		}
+	}
 }
 
 type bearer struct {
