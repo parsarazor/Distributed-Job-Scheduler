@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc"
@@ -59,7 +61,7 @@ func TestWorkerCredentials_BoundRevocableAndRotatable(t *testing.T) {
 	if err != nil || len(list.Credentials) != 2 {
 		t.Fatalf("list: %+v %v", list, err)
 	}
-	if _, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: "has space"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: " padded"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("invalid worker_id: %v", err)
 	}
 	if _, err := admin.RevokeWorkerCredential(ctx, &apiv1.RevokeWorkerCredentialRequest{CredentialId: uuid.NewString()}); status.Code(err) != codes.NotFound {
@@ -76,5 +78,26 @@ func TestWorkerCredentials_SharedTokenCanBeDisabled(t *testing.T) {
 	_, err := auth(ctx, nil, info, func(context.Context, any) (any, error) { return nil, nil })
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("shared token must be rejected once disabled: %v", err)
+	}
+}
+
+func TestWorkerCredentials_LegacyTenantKeyWithWorkerPrefix(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _, _ := newWiredPair()
+	s.SetWorkerCredentials(memory.NewWorkerCredentialRepo())
+	const legacy = "djw_legacy-tenant-key-created-before-worker-credentials"
+	if err := s.tenants.Create(ctx, &domain.Tenant{ID: uuid.New(), Name: "legacy", APIKeyHash: domain.HashAPIKey(legacy), CreatedAt: time.Now(), MaxInFlight: domain.DefaultTenantMaxInFlight}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dialScheduler(t, s, legacy).ListJobs(ctx, &apiv1.ListJobsRequest{}); err != nil {
+		t.Fatalf("legacy tenant key must still authenticate: %v", err)
+	}
+	if _, err := dialScheduler(t, s, legacy).GetExecutionJob(ctx, &apiv1.GetExecutionJobRequest{JobId: uuid.Nil.String(), WorkerId: "edge-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant key must not act as a worker: %v", err)
+	}
+	admin := dialScheduler(t, s, adminTestKey)
+	if _, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: "edge 1"}); err != nil {
+		t.Fatalf("worker IDs with inner spaces are valid: %v", err)
 	}
 }

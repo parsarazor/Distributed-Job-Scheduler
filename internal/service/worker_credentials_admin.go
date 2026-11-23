@@ -26,9 +26,7 @@ func (s *Scheduler) SetWorkerCredentials(repo repository.WorkerCredentialReposit
 }
 
 func validWorkerID(id string) bool {
-	return id != "" && len(id) <= maxWorkerIDLen && !strings.ContainsFunc(id, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r)
-	})
+	return id != "" && len(id) <= maxWorkerIDLen && strings.TrimSpace(id) == id && !strings.ContainsFunc(id, unicode.IsControl)
 }
 
 func (s *Scheduler) workerCredentials() (repository.WorkerCredentialRepository, error) {
