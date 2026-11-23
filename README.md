@@ -66,7 +66,18 @@ Provision a tenant before submitting jobs. Generate a random API key, store only
 
 The scheduler is the only service with database credentials. Workers are stateless: they consume RabbitMQ announcements and reach job state only through the scheduler's worker RPCs, and refuse to start if `DATABASE_URL` is set. A compromised worker can therefore claim announced jobs and see their payloads, but cannot read or modify other rows. The shared `WORKER_TOKEN` is still a fleet-wide credential; per-worker identities (mTLS or per-worker tokens) are future hardening.
 
-Tenant admission is serialized in Postgres: at most 1,000 outstanding jobs and 600 newly created jobs per minute per tenant. Dispatch rotates tenants using persisted turns, preserves priority within each tenant, and caps each tenant at ten queued/running dispatched jobs. These limits apply across scheduler replicas. Canceled announcements are retired before publication. Published canceled announcements retain their backlog credits until receipt or broker expiry. Idempotent submission retries do not consume additional quota. Dependency validation reads metadata and limits chains to 128 jobs.
+Tenant admission is serialized in Postgres: at most 1,000 outstanding jobs and 600 newly created jobs per minute per tenant. Dispatch rotates tenants using persisted turns, preserves priority within each tenant, and caps each tenant at `tenants.max_in_flight` (default 10) queued/running dispatched jobs. These limits apply across scheduler replicas. Canceled announcements are retired before publication. Published canceled announcements retain their backlog credits until receipt or broker expiry. Idempotent submission retries do not consume additional quota. Dependency validation reads metadata and limits chains to 128 jobs.
+
+## Scheduler replicas
+
+Run two or more scheduler replicas against the same Postgres for availability. Every replica runs all background loops. Dispatch, outbox publication, retry recovery, lease reaping and retention claim rows with `FOR UPDATE SKIP LOCKED`, so replicas split the work and never process the same row twice. Tenant limits are enforced in Postgres and hold across replicas.
+
+- **Clients:** put the replicas behind an L4/L7 gRPC load balancer, or a DNS name that resolves to all of them.
+- **Workers:** point `SCHEDULER_ADDR` at a DNS name that resolves to every replica. Workers balance calls with gRPC `round_robin`, and replicas recycle connections every 5 minutes so new replicas pick up traffic. If a replica dies, its calls fail with `Unavailable` and the worker retries them on another replica.
+- **Per-replica state:** dispatch wake-ups and the bad-key throttle are local to each replica. The `DISPATCH_INTERVAL` tick covers work that another replica made ready.
+- **Restarts:** each starting replica extends running leases that have lapsed by `LEASE_RESTART_GRACE`. With other replicas up, only leases that lapsed since their reaper's last pass are affected, so a dead worker's job is re-run at most that much later.
+
+Local two-replica stack: `docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build`.
 
 ## Config
 
