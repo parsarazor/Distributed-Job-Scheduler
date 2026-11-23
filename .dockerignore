@@ -6,6 +6,8 @@
 !cmd/scheduler/**
 !cmd/worker/
 !cmd/worker/**
+!cmd/schedctl/
+!cmd/schedctl/**
 !internal/
 !internal/**
 !pkg/
