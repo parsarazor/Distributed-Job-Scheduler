@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"sort"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -31,6 +34,10 @@ func (s *WorkerServer) Execute(ctx context.Context, req *apiv1.ExecuteRequest) (
 	}
 	job, err := s.worker.sched.GetJob(ctx, id)
 	if err != nil {
+		slog.Error("worker execute job lookup failed", "job_id", id, "error", err)
+		if errors.Is(err, domain.ErrJobNotFound) {
+			return &apiv1.ExecuteResponse{Accepted: false, Message: "job not found"}, nil
+		}
 		return &apiv1.ExecuteResponse{Accepted: false, Message: "job lookup failed"}, nil
 	}
 	// The request is an announcement, not authority to substitute current
@@ -55,9 +62,10 @@ func (s *WorkerServer) GetWorkerStatus(ctx context.Context, _ *apiv1.GetWorkerSt
 	active := s.worker.ActiveJobs()
 	infos := make([]*apiv1.ActiveJobInfo, 0, len(active))
 	for _, a := range active {
+		// Fencing tokens stay on the lease path; status must not hand them out.
 		infos = append(infos, &apiv1.ActiveJobInfo{
 			JobId: a.JobID.String(), TenantId: a.TenantID.String(), Name: a.Name,
-			StartedAt: timestamppb.New(a.StartedAt), FencingToken: a.FencingToken,
+			StartedAt: timestamppb.New(a.StartedAt),
 		})
 	}
 	s.worker.mu.RLock()

@@ -1,11 +1,33 @@
+-- Repair migration, part 1: fast, transactional steps only.
+--
+-- This file runs as a single implicit transaction (one simple-query round
+-- trip), so it is all-or-nothing. Long-running DDL such as
+-- CREATE INDEX CONCURRENTLY cannot run inside a transaction and therefore
+-- lives in its own single-statement migration (parts 3+).
+SET lock_timeout = '5s';
+
 ALTER TABLE jobs ADD COLUMN submission_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN payload_expired BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE job_outbox ADD COLUMN next_publish_at TIMESTAMPTZ;
 ALTER TABLE job_outbox ADD COLUMN delivered_at TIMESTAMPTZ;
+ALTER TABLE job_outbox ADD COLUMN publishing_since TIMESTAMPTZ;
+ALTER TABLE job_outbox ADD COLUMN dead_lettered BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Refuse unexpected imported priorities instead of silently changing ordering.
+-- The pre-check fails this transaction with a clear operator error, leaving the
+-- database at the previous clean schema version, instead of letting the CHECK
+-- constraint abort mid-migration and mark the database dirty. The constraint is
+-- added NOT VALID here and validated in part 2 so no full-table lock is held.
+DO $repair_check_priorities$
+BEGIN
+    IF EXISTS (SELECT 1 FROM jobs WHERE priority NOT IN (0, 2, 5, 10)) THEN
+        RAISE EXCEPTION 'repair migration: jobs rows exist with priority outside (0, 2, 5, 10); normalize them before upgrading';
+    END IF;
+END;
+$repair_check_priorities$;
+
 ALTER TABLE jobs DROP CONSTRAINT chk_job_priority;
-ALTER TABLE jobs ADD CONSTRAINT chk_job_priority CHECK (priority IN (0, 2, 5, 10));
+ALTER TABLE jobs ADD CONSTRAINT chk_job_priority CHECK (priority IN (0, 2, 5, 10)) NOT VALID;
 DROP INDEX IF EXISTS idx_tenants_api_key_hash;
 
 -- Quarantine jobs whose execution depended on another tenant's data.
@@ -32,11 +54,6 @@ FROM jobs j JOIN cancelled c USING (id);
 UPDATE jobs j SET depends_on = NULL
 FROM jobs p WHERE j.depends_on = p.id AND j.tenant_id <> p.tenant_id;
 
-ALTER TABLE jobs ADD CONSTRAINT uq_jobs_tenant_id_id UNIQUE (tenant_id, id);
-ALTER TABLE jobs ADD CONSTRAINT fk_jobs_dependency_tenant
-    FOREIGN KEY (tenant_id, depends_on) REFERENCES jobs (tenant_id, id)
-    ON DELETE SET NULL (depends_on);
-
 -- Retire incompatible announcements and compact the rest using only original
 -- attempt data. Never convert an old payload into authorization for a new attempt.
 UPDATE job_outbox
@@ -55,18 +72,6 @@ SET payload = jsonb_strip_nulls(jsonb_build_object(
     'traceparent', payload->'traceparent', 'tracestate', payload->'tracestate'
 ))
 WHERE NOT published;
-
-CREATE INDEX idx_jobs_tenant_page ON jobs (tenant_id, created_at DESC, id);
-CREATE INDEX idx_jobs_tenant_outstanding ON jobs (tenant_id) WHERE status IN ('pending','running','failed');
-CREATE INDEX idx_jobs_tenant_dispatch_ready ON jobs (tenant_id, priority DESC, scheduled_at, id)
-    WHERE status = 'pending' AND dispatched_at IS NULL;
-CREATE INDEX idx_jobs_tenant_dispatch_active ON jobs (tenant_id)
-    WHERE status IN ('pending', 'running') AND dispatched_at IS NOT NULL;
-CREATE INDEX idx_jobs_stale_dispatch ON jobs (dispatched_at, id)
-    WHERE status = 'pending' AND dispatched_at IS NOT NULL;
-CREATE INDEX idx_outbox_job_publication ON job_outbox (job_id, published, published_at);
-CREATE INDEX idx_outbox_undelivered ON job_outbox (job_id) WHERE published AND delivered_at IS NULL;
-CREATE INDEX idx_job_events_page ON job_events (job_id, occurred_at, id);
 
 -- Retention uses the actual mutation clock even in an older transaction.
 CREATE OR REPLACE FUNCTION update_updated_at_column()

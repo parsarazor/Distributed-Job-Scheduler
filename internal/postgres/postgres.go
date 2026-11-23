@@ -52,7 +52,7 @@ func (p *Pool) Close() { p.pool.Close() }
 // Ping verifies connectivity.
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
-const SchemaVersion = 7
+const SchemaVersion = 18
 
 // CheckSchema rejects missing, partially applied or incompatible migrations.
 func (p *Pool) CheckSchema(ctx context.Context) error {
@@ -414,9 +414,21 @@ func (r *JobRepo) GetPendingRetryJobs(ctx context.Context, limit int) ([]*domain
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := db.Query(ctx, `SELECT `+jobMetadataColumns+` FROM jobs
-		WHERE status='failed' AND (next_retry_at IS NULL OR next_retry_at <= statement_timestamp() OR attempt_count >= max_attempts)
-		ORDER BY next_retry_at ASC NULLS FIRST, id LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
+	// Split the OR-heavy predicate into UNION arms so each side can use its
+	// own index (idx_jobs_retry for due retries; the partial index also covers
+	// the IS NULL arm). A shared OR forces a sequential scan of every failed
+	// job on every scheduler tick. IDs are deduplicated in the CTE, then the
+	// final join preserves the previous (next_retry_at NULLS FIRST, id)
+	// ordering and limit semantics under row locks.
+	rows, err := db.Query(ctx, `WITH due AS (
+		SELECT id FROM jobs WHERE status='failed' AND attempt_count >= max_attempts
+		UNION
+		SELECT id FROM jobs WHERE status='failed' AND next_retry_at IS NULL
+		UNION
+		SELECT id FROM jobs WHERE status='failed' AND next_retry_at <= statement_timestamp()
+	)
+	SELECT `+jobMetadataColumns+` FROM jobs JOIN due USING (id)
+	ORDER BY jobs.next_retry_at ASC NULLS FIRST, jobs.id LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -688,10 +700,10 @@ func (r *EventRepo) listEvents(ctx context.Context, jobID uuid.UUID, limit, offs
 
 func (r *OutboxRepo) Store(ctx context.Context, event *domain.OutboxEvent) error {
 	db := dbFromCtx(ctx, r.db)
-	_, err := db.Exec(ctx, `INSERT INTO job_outbox (id, job_id, routing_key, payload, published, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
+	_, err := db.Exec(ctx, `INSERT INTO job_outbox (id, job_id, routing_key, payload, published, dead_lettered, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO NOTHING`,
 		event.ID, event.JobID, event.RoutingKey, string(event.Payload),
-		event.Published, event.RetryCount, event.LastError, event.CreatedAt, event.PublishedAt, event.NextPublishAt, event.DeliveredAt)
+		event.Published, event.DeadLettered, event.RetryCount, event.LastError, event.CreatedAt, event.PublishedAt, event.NextPublishAt, event.DeliveredAt)
 	return err
 }
 
@@ -700,11 +712,10 @@ func (r *OutboxRepo) FetchUnpublished(ctx context.Context, limit int, olderThan 
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := db.Query(ctx, `SELECT id, job_id, routing_key, payload, published, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at
+	rows, err := db.Query(ctx, `SELECT id, job_id, routing_key, payload, published, dead_lettered, publishing_since, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at
 		FROM job_outbox
 		WHERE NOT published AND created_at <= statement_timestamp()-make_interval(secs => $1)
-		ORDER BY created_at ASC, id LIMIT $2
-		FOR UPDATE SKIP LOCKED`, olderThan.Seconds(), limit)
+		ORDER BY created_at ASC, id LIMIT $2`, olderThan.Seconds(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -720,23 +731,48 @@ func (r *OutboxRepo) FetchUnpublished(ctx context.Context, limit int, olderThan 
 	return out, rows.Err()
 }
 
+// FetchPublishable claims one due outbox row for publication. The claim is the
+// only thing this call does inside the caller's transaction: it stamps
+// publishing_since and commits. The RabbitMQ publish itself must happen after
+// the transaction ends so no row lock or DB transaction is held across the
+// broker round trip. Rows whose claim is older than the publishing lease are
+// skipped here and reclaimed by ReclaimStalePublishing.
 func (r *OutboxRepo) FetchPublishable(ctx context.Context, olderThan time.Duration, exclude []uuid.UUID) (*domain.OutboxEvent, error) {
-	event, err := scanOutbox(dbFromCtx(ctx, r.db).QueryRow(ctx, `SELECT id, job_id, routing_key, payload,
-		published, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at
-		FROM job_outbox WHERE NOT published AND created_at <= statement_timestamp()-make_interval(secs => $1)
-		AND (next_publish_at IS NULL OR next_publish_at <= statement_timestamp())
-		AND NOT (id=ANY(COALESCE($2::uuid[], ARRAY[]::uuid[])))
-		ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`, olderThan.Seconds(), exclude))
+	event, err := scanOutbox(dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE job_outbox SET publishing_since=clock_timestamp()
+		WHERE id = (
+			SELECT id FROM job_outbox
+			WHERE NOT published AND NOT dead_lettered
+			AND created_at <= statement_timestamp()-make_interval(secs => $1)
+			AND (next_publish_at IS NULL OR next_publish_at <= statement_timestamp())
+			AND (publishing_since IS NULL OR publishing_since <= clock_timestamp()-make_interval(secs => $3))
+			AND NOT (id=ANY(COALESCE($2::uuid[], ARRAY[]::uuid[])))
+			ORDER BY created_at, id LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, job_id, routing_key, payload, published, dead_lettered, publishing_since, retry_count, last_error, created_at, published_at, next_publish_at, delivered_at`,
+		olderThan.Seconds(), exclude, int64(domain.PublishingLease/time.Second)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return event, err
 }
 
+// ReclaimStalePublishing releases claims abandoned by a crashed publisher so
+// those rows become eligible again.
+func (r *OutboxRepo) ReclaimStalePublishing(ctx context.Context) (int64, error) {
+	tag, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE job_outbox SET publishing_since=NULL
+		WHERE NOT published AND NOT dead_lettered AND publishing_since <= clock_timestamp()-make_interval(secs => $1)`,
+		int64(domain.PublishingLease/time.Second))
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func scanOutbox(row pgx.Row) (*domain.OutboxEvent, error) {
 	var e domain.OutboxEvent
 	var payload []byte
-	if err := row.Scan(&e.ID, &e.JobID, &e.RoutingKey, &payload, &e.Published, &e.RetryCount, &e.LastError, &e.CreatedAt, &e.PublishedAt, &e.NextPublishAt, &e.DeliveredAt); err != nil {
+	if err := row.Scan(&e.ID, &e.JobID, &e.RoutingKey, &payload, &e.Published, &e.DeadLettered, &e.PublishingSince, &e.RetryCount, &e.LastError, &e.CreatedAt, &e.PublishedAt, &e.NextPublishAt, &e.DeliveredAt); err != nil {
 		return nil, err
 	}
 	e.Payload = payload
@@ -745,15 +781,20 @@ func scanOutbox(row pgx.Row) (*domain.OutboxEvent, error) {
 
 func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
 	db := dbFromCtx(ctx, r.db)
-	_, err := db.Exec(ctx, `UPDATE job_outbox SET published=TRUE, published_at=clock_timestamp(), next_publish_at=NULL WHERE id=$1`, id)
+	_, err := db.Exec(ctx, `UPDATE job_outbox SET published=TRUE, published_at=clock_timestamp(), publishing_since=NULL, next_publish_at=NULL WHERE id=$1`, id)
 	return err
 }
 
+// MarkFailed records a publish failure, schedules the retry with jittered
+// backoff and dead-letters the row once the retry ceiling is reached so it
+// stops consuming publisher passes.
 func (r *OutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, lastErr string) error {
 	db := dbFromCtx(ctx, r.db)
-	_, err := db.Exec(ctx, `UPDATE job_outbox SET retry_count=retry_count+1, last_error=$2,
-		next_publish_at=clock_timestamp()+make_interval(secs => (1 << least(retry_count, 8))::double precision)
-		WHERE id=$1 AND NOT published`, id, lastErr)
+	_, err := db.Exec(ctx, `UPDATE job_outbox SET retry_count=retry_count+1, last_error=$2, publishing_since=NULL,
+		dead_lettered = (retry_count+1 >= $3),
+		next_publish_at = CASE WHEN retry_count+1 >= $3 THEN NULL
+			ELSE clock_timestamp()+make_interval(secs => (1 << least(retry_count, 8))::double precision) END
+		WHERE id=$1 AND NOT published`, id, lastErr, domain.MaxOutboxRetries)
 	return err
 }
 
@@ -772,8 +813,7 @@ func (r *OutboxRepo) RetireUnpublished(ctx context.Context, jobID uuid.UUID) err
 
 func (r *OutboxRepo) DeletePublished(ctx context.Context, olderThan time.Duration) (int64, error) {
 	db := dbFromCtx(ctx, r.db)
-	cutoff := time.Now().UTC().Add(-olderThan)
-	tag, err := db.Exec(ctx, `DELETE FROM job_outbox WHERE published=TRUE AND published_at IS NOT NULL AND published_at < $1`, cutoff)
+	tag, err := db.Exec(ctx, `DELETE FROM job_outbox WHERE published=TRUE AND published_at IS NOT NULL AND published_at < clock_timestamp()-make_interval(secs => $1)`, olderThan.Seconds())
 	if err != nil {
 		return 0, err
 	}

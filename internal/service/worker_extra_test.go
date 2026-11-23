@@ -304,7 +304,8 @@ func TestGRPC_HeartbeatRenewsOwnedLease(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("handler never started")
 	}
-	_, wc := dialTestServers(t, s, w)
+	_, wc := dialTestServers(t, s.tenants, s, w)
+	ctx = credCtx(ctx, workerTestKey)
 	before, err := s.GetJob(ctx, job.ID)
 	if err != nil {
 		t.Fatal(err)

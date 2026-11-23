@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 )
 
@@ -34,6 +35,10 @@ func (p *Pool) Stats(ctx context.Context) (repository.Stats, error) {
 
 func (p *Pool) Prune(ctx context.Context, outboxAge, auditAge time.Duration) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM job_outbox WHERE id IN (SELECT id FROM job_outbox WHERE published AND published_at < clock_timestamp()-make_interval(secs => $1) LIMIT 1000)`, outboxAge.Seconds())
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx, `DELETE FROM job_outbox WHERE id IN (SELECT id FROM job_outbox WHERE dead_lettered AND created_at < clock_timestamp()-make_interval(secs => $1) LIMIT 1000)`, domain.DeadLetterRetention.Seconds())
 	if err != nil {
 		return err
 	}

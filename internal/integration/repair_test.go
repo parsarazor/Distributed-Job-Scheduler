@@ -114,34 +114,62 @@ func TestPostgresRepairContracts(t *testing.T) {
 		if n, err := f.sched.DispatchReady(f.ctx, 8); err != nil || n != 8 {
 			t.Fatalf("dispatch=%d err=%v", n, err)
 		}
+		// Publish a confirmed prefix immediately, then hold the next claim open
+		// until the pass deadline, so exactly one row is left in flight.
+		const confirmed = 4
+		calls := 0
 		slow := &recordingPublisher{hook: func(ctx context.Context) error {
-			timer := time.NewTimer(100 * time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
+			calls++
+			if calls <= confirmed {
 				return nil
-			case <-ctx.Done():
-				return ctx.Err()
 			}
+			<-ctx.Done()
+			return ctx.Err()
 		}}
-		ctx, cancel := context.WithTimeout(f.ctx, 350*time.Millisecond)
+		ctx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
 		defer cancel()
 		n, err := f.scheduler(f.repos.Events, f.repos.Outbox, slow).ReconcileOutbox(ctx, 8)
-		if !errors.Is(err, context.DeadlineExceeded) || n < 1 || n >= 8 {
+		if !errors.Is(err, context.DeadlineExceeded) || n != confirmed {
 			t.Fatalf("slow pass progress=%d err=%v", n, err)
 		}
-		if left := unpublished(t, f); len(left) != 8-n {
+		left := unpublished(t, f)
+		if len(left) != 8-n {
 			t.Fatalf("confirmed progress rolled back: confirmed=%d left=%d", n, len(left))
 		}
-		if recovered, err := f.sched.ReconcileOutbox(f.ctx, 8); err != nil || recovered != 8-n {
-			t.Fatalf("recovery progress=%d err=%v", recovered, err)
+		held := 0
+		for _, row := range left {
+			if row.Published || row.DeadLettered {
+				t.Fatalf("timed-out pass changed row state: %+v", row)
+			}
+			if row.PublishingSince != nil {
+				held++
+			}
 		}
-		confirmed := map[string]bool{}
+		if held != 1 {
+			t.Fatalf("timed-out pass must leave exactly its in-flight claim held: held=%d left=%+v", held, left)
+		}
+		// A live lease is not stale: another pass must withhold that row only.
+		if published, err := f.sched.ReconcileOutbox(f.ctx, 8); err != nil || published != 8-n-held {
+			t.Fatalf("active lease pass published=%d err=%v", published, err)
+		}
+		if left := unpublished(t, f); len(left) != held {
+			t.Fatalf("active lease row was re-claimed: left=%d held=%d", len(left), held)
+		}
+		if _, err := repairSQL(t, f).Exec(f.ctx, `UPDATE job_outbox SET publishing_since=clock_timestamp()-make_interval(secs => $1::double precision) WHERE NOT published AND publishing_since IS NOT NULL`, (domain.PublishingLease + time.Second).Seconds()); err != nil {
+			t.Fatal(err)
+		}
+		if reclaimed, err := f.repos.Outbox.ReclaimStalePublishing(f.ctx); err != nil || reclaimed != int64(held) {
+			t.Fatalf("expired lease reclaimed=%d err=%v", reclaimed, err)
+		}
+		if recovered, err := f.sched.ReconcileOutbox(f.ctx, 8); err != nil || recovered != held {
+			t.Fatalf("lease recovery progress=%d err=%v", recovered, err)
+		}
+		confirmedIDs := map[string]bool{}
 		for _, m := range slow.published()[:n] {
-			confirmed[m.MessageID] = true
+			confirmedIDs[m.MessageID] = true
 		}
 		for _, m := range f.bus.published() {
-			if confirmed[m.MessageID] {
+			if confirmedIDs[m.MessageID] {
 				t.Fatal("recovery republished a committed confirmation")
 			}
 		}

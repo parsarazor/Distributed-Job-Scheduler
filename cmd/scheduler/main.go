@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -31,7 +31,7 @@ func main() {
 	err := run(ctx)
 	stop()
 	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Print(err)
+		slog.Error("scheduler exited", "error", err)
 		os.Exit(1)
 	}
 }
@@ -45,7 +45,7 @@ func run(ctx context.Context) (runErr error) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownTracing(shutdownCtx); err != nil {
-			log.Printf("shutdown tracing: %v", err)
+			slog.Warn("shutdown tracing", "error", err)
 		}
 	}()
 	deps, err := app.NewFromEnv(ctx)
@@ -87,7 +87,7 @@ func run(ctx context.Context) (runErr error) {
 
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- health.Serve(grpcServer, lis) }()
-	log.Printf("scheduler listening on %s (storage=%s)", lis.Addr(), storageMode())
+	slog.Info("scheduler listening", "addr", lis.Addr().String(), "storage", storageMode())
 	select {
 	case <-ctx.Done():
 	case err := <-ops.Errors:
@@ -106,7 +106,7 @@ func run(ctx context.Context) (runErr error) {
 	if err := ops.Shutdown(shutdownCtx); err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("shutdown operations: %w", err))
 	}
-	log.Println("scheduler stopped")
+	slog.Info("scheduler stopped")
 	return runErr
 }
 

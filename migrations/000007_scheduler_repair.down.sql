@@ -1,18 +1,12 @@
-DROP INDEX idx_job_events_page;
-DROP INDEX idx_outbox_undelivered;
-DROP INDEX idx_outbox_job_publication;
-DROP INDEX idx_jobs_stale_dispatch;
-DROP INDEX idx_jobs_tenant_dispatch_active;
-DROP INDEX idx_jobs_tenant_dispatch_ready;
-DROP INDEX idx_jobs_tenant_page;
-DROP INDEX idx_jobs_tenant_outstanding;
-
-ALTER TABLE jobs DROP CONSTRAINT fk_jobs_dependency_tenant;
-ALTER TABLE jobs DROP CONSTRAINT uq_jobs_tenant_id_id;
-ALTER TABLE job_outbox DROP COLUMN next_publish_at;
-ALTER TABLE job_outbox DROP COLUMN delivered_at;
-ALTER TABLE jobs DROP COLUMN submission_hash;
-ALTER TABLE jobs DROP COLUMN payload_expired;
-ALTER TABLE jobs DROP CONSTRAINT chk_job_priority;
+-- Repair migration, part 1 down: undo the transactional data/constraint steps.
+-- Index migrations (parts 3 and later) are dropped in their own down files.
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS chk_job_priority;
 ALTER TABLE jobs ADD CONSTRAINT chk_job_priority CHECK (priority >= 0);
+ALTER TABLE jobs DROP COLUMN IF EXISTS payload_expired;
+ALTER TABLE jobs DROP COLUMN IF EXISTS submission_hash;
+ALTER TABLE job_outbox DROP COLUMN IF EXISTS dead_lettered;
+ALTER TABLE job_outbox DROP COLUMN IF EXISTS publishing_since;
+ALTER TABLE job_outbox DROP COLUMN IF EXISTS delivered_at;
+ALTER TABLE job_outbox DROP COLUMN IF EXISTS next_publish_at;
+DROP FUNCTION IF EXISTS update_updated_at_column();
 -- Invalid legacy dependencies and old announcement payloads cannot be restored.

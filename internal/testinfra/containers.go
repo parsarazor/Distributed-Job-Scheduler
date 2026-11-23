@@ -147,18 +147,30 @@ func migrate(t *testing.T, ctx context.Context, dsn string) {
 		t.Fatalf("connect for migrations: %v", err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin migrations: %v", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
 	for _, path := range files {
 		sql, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", filepath.Base(path), err)
 		}
+		// CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
+		// Migration runners execute such a file as one implicit transaction;
+		// every other file is applied atomically on its own.
+		if strings.Contains(strings.ToUpper(string(sql)), "CONCURRENTLY") {
+			if _, err := conn.Exec(ctx, string(sql)); err != nil {
+				t.Fatalf("apply migration %s: %v", filepath.Base(path), err)
+			}
+			continue
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin migration %s: %v", filepath.Base(path), err)
+		}
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			_ = tx.Rollback(context.Background())
 			t.Fatalf("apply migration %s: %v", filepath.Base(path), err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit migration %s: %v", filepath.Base(path), err)
 		}
 	}
 	// Mirror the deployment runner's version marker so runtime schema checks
@@ -168,14 +180,11 @@ func migrate(t *testing.T, ctx context.Context, dsn string) {
 	if err != nil {
 		t.Fatalf("read migration version: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version bigint NOT NULL PRIMARY KEY, dirty boolean NOT NULL)`); err != nil {
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version bigint NOT NULL PRIMARY KEY, dirty boolean NOT NULL)`); err != nil {
 		t.Fatalf("create migration version marker: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version, dirty) VALUES ($1, false)`, version); err != nil {
+	if _, err := conn.Exec(ctx, `INSERT INTO schema_migrations (version, dirty) VALUES ($1, false)`, version); err != nil {
 		t.Fatalf("record migration version: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit migrations: %v", err)
 	}
 }
 

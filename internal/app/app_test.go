@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 )
@@ -94,4 +96,28 @@ func TestNewFromEnv_RejectsUnknownStorage(t *testing.T) {
 	if _, err := NewFromEnv(context.Background()); err == nil || err.Error() != `unknown STORAGE "other": expected memory or postgres` {
 		t.Fatalf("unknown storage must be rejected, got %v", err)
 	}
+}
+
+// M2: one panicking tick must not take down the loop; the next tick runs.
+func TestLoop_RecoversFromPanickingTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	ticks := make(chan int, 4)
+	go Loop(ctx, &wg, 2*time.Millisecond, "panic-loop", func(context.Context) error {
+		ticks <- 1
+		panic("boom")
+	})
+	deadline := time.After(2 * time.Second)
+	seen := 0
+	for seen < 2 {
+		select {
+		case <-ticks:
+			seen++
+		case <-deadline:
+			t.Fatalf("loop died after panic, ticks=%d", seen)
+		}
+	}
+	cancel()
+	wg.Wait()
 }

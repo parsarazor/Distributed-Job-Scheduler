@@ -77,6 +77,12 @@ type JobRepository interface {
 	// RecoverStaleDispatches clears old confirmed dispatches for unclaimed jobs and invalidates old announcements.
 	RecoverStaleDispatches(ctx context.Context, limit int, age time.Duration) error
 
+	// TerminalizeOutboxExhausted transitions pending jobs whose announcements
+	// have dead-lettered maxDeadLettered times to StatusDead and clears their
+	// dispatch marker, returning the affected job IDs. Callers record the
+	// explaining job event.
+	TerminalizeOutboxExhausted(ctx context.Context, limit, maxDeadLettered int) ([]uuid.UUID, error)
+
 	// GetPendingRetryJobs locks legacy failed jobs that are due, unscheduled or exhausted.
 	GetPendingRetryJobs(ctx context.Context, limit int) ([]*domain.Job, error)
 

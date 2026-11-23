@@ -189,7 +189,7 @@ func handlerResult(err error) (final domain.JobStatus, message, kind string) {
 	case errors.Is(err, context.Canceled):
 		return domain.StatusFailed, "handler canceled", "canceled"
 	case errors.Is(err, errNoHandler):
-		return domain.StatusFailed, "handler not registered", "error"
+		return domain.StatusFailed, domain.ReasonHandlerNotRegistered, "error"
 	default:
 		return domain.StatusFailed, "handler failed", "error"
 	}
@@ -218,7 +218,10 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 				return domain.ErrLeaseLost
 			}
 		}
-		if a.leaseLost || !time.Now().Before(a.deadline) {
+		// The local timer is advisory only: report anyway and let the
+		// server-side fencing token decide. This avoids clock-skew-induced
+		// duplicate runs when the local deadline drifted past the real lease.
+		if a.leaseLost {
 			a.leaseLost, a.finished = true, true
 			a.cancel(domain.ErrLeaseLost)
 			a.gate.Release(1)

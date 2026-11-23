@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -201,6 +202,8 @@ func logSamplingState(name string, err error, failed *bool) {
 }
 
 // Loop runs bounded background operations and participates in shutdown.
+// A panic inside a single tick is recovered and logged so one bad tick
+// cannot crash the scheduler process; the loop keeps ticking.
 func Loop(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, name string, fn func(context.Context) error) {
 	wg.Go(func() {
 		ticker := time.NewTicker(interval)
@@ -210,11 +213,18 @@ func Loop(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, name 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-				if err := fn(runCtx); err != nil && ctx.Err() == nil {
-					slog.Error(name, "error", err)
-				}
-				cancel()
+				func() {
+					defer func() {
+						if p := recover(); p != nil {
+							slog.Error(name+": tick panicked", "panic", p, "stack", string(debug.Stack()))
+						}
+					}()
+					runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+					defer cancel()
+					if err := fn(runCtx); err != nil && ctx.Err() == nil {
+						slog.Error(name, "error", err)
+					}
+				}()
 			}
 		}
 	})

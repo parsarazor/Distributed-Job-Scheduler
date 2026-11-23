@@ -299,7 +299,7 @@ func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, worke
 			n, err = s.jobs.CountWaitingDependents(ctx, jobID)
 			return err
 		}
-		err = s.finishFailure(ctx, job)
+		err = s.finishFailure(ctx, job, final == domain.StatusFailed && errMsg == domain.ReasonHandlerNotRegistered)
 		persistedStatus = job.Status
 		return err
 	})
@@ -316,10 +316,12 @@ func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, worke
 
 // finishFailure preserves running -> failed -> pending/dead for both worker
 // reports and expired leases. Its caller owns the transaction and row lock.
-func (s *Scheduler) finishFailure(ctx context.Context, job *domain.Job) error {
+// A non-retryable failure (e.g. no worker registered the handler) skips the
+// remaining retry budget and dead-letters immediately.
+func (s *Scheduler) finishFailure(ctx context.Context, job *domain.Job, nonRetryable bool) error {
 	to, reason := domain.StatusDead, "retries exhausted"
 	job.NextRetryAt = nil
-	if job.AttemptCount < job.MaxAttempts {
+	if !nonRetryable && job.AttemptCount < job.MaxAttempts {
 		to, reason = domain.StatusPending, "retry scheduled"
 		if err := s.scheduleRetry(ctx, job); err != nil {
 			return err
@@ -375,7 +377,7 @@ func (s *Scheduler) ReapExpiredLeases(ctx context.Context, limit int) (int, erro
 			if err := s.recordTransition(ctx, job.ID, domain.StatusRunning, domain.StatusFailed, workerID, "lease expired"); err != nil {
 				return err
 			}
-			if err := s.finishFailure(ctx, failed); err != nil {
+			if err := s.finishFailure(ctx, failed, false); err != nil {
 				return err
 			}
 			counts[failed.Status]++
@@ -413,6 +415,20 @@ func (s *Scheduler) DispatchReady(ctx context.Context, batchSize int) (int, erro
 	}
 	n := 0
 	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		exhausted, err := s.jobs.TerminalizeOutboxExhausted(ctx, batchSize, domain.MaxDeadLetteredDispatches)
+		if err != nil {
+			return err
+		}
+		for _, id := range exhausted {
+			if err := s.recordTransition(ctx, id, domain.StatusPending, domain.StatusDead, "", "outbox publish exhausted: announcements dead-lettered"); err != nil {
+				return err
+			}
+			if err := s.cancelDependents(ctx, id, "parent terminal failure"); err != nil {
+				return err
+			}
+			telemetry.OutboxExhaustedJobs.Inc()
+			slog.Error("job terminalized: outbox publish exhausted", "job_id", id, "dead_lettered", domain.MaxDeadLetteredDispatches)
+		}
 		if err := s.jobs.RecoverStaleDispatches(ctx, batchSize, redispatchAfter); err != nil {
 			return err
 		}
@@ -515,8 +531,13 @@ func (s *Scheduler) RetryDue(ctx context.Context, limit int) (int, error) {
 	return n, nil
 }
 
-// ReconcileOutbox publishes ready announcements under row locks until confirmed.
-// Broker outages are retried indefinitely; attempts remain visible in the outbox.
+// ReconcileOutbox publishes ready announcements using claim-then-publish: each
+// row is claimed in a short transaction (stamping publishing_since), the
+// RabbitMQ publish happens with no transaction or row lock held, and the
+// outcome is persisted in a second short transaction. A crashed publisher's
+// stale claims are released by ReclaimStalePublishing on the next pass.
+// Broker outages are retried with backoff up to domain.MaxOutboxRetries, then
+// the row is dead-lettered and kept for inspection.
 func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 {
 		limit = 100
@@ -525,43 +546,27 @@ func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error)
 	if s.bus == nil {
 		return 0, nil
 	}
-	// Give the pass a finite budget. Each row receives its own transaction and
+	// Give the pass a finite budget. Each row gets its own claim transaction and
 	// a shorter publish deadline so there's time left to persist its outcome.
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	n := 0
 	var passErr error
 	var excluded []uuid.UUID
+	if _, err := s.outbox.ReclaimStalePublishing(ctx); err != nil {
+		return 0, err
+	}
 	for range limit {
 		if err := ctx.Err(); err != nil {
 			return n, errors.Join(passErr, err)
 		}
 		rowCtx, stop := context.WithTimeout(ctx, 4*time.Second)
 		var event *domain.OutboxEvent
-		var published bool
+		// 1. Claim: short transaction, committed before the publish.
 		err := s.tx.WithinTransaction(rowCtx, func(txCtx context.Context) error {
 			var err error
 			event, err = s.outbox.FetchPublishable(txCtx, s.ReconcileThreshold, excluded)
-			if err != nil || event == nil {
-				return err
-			}
-			publishCtx, endPublish := context.WithTimeout(txCtx, 2*time.Second)
-			err = s.bus.Publish(publishCtx, event.RoutingKey, event.Payload, event.ID.String())
-			endPublish()
-			if err != nil {
-				telemetry.OutboxPublishFailures.Inc()
-				if event.RetryCount+1 == domain.MaxOutboxRetries {
-					slog.Warn("outbox announcement repeatedly failed", "outbox_id", event.ID,
-						"job_id", event.JobID, "attempts", event.RetryCount+1)
-				}
-				reason := "broker publish failed"
-				if errors.Is(err, context.DeadlineExceeded) {
-					reason = "broker publish timed out"
-				}
-				return s.outbox.MarkFailed(txCtx, event.ID, reason)
-			}
-			published = true
-			return s.outbox.MarkPublished(txCtx, event.ID)
+			return err
 		})
 		stop()
 		if err != nil {
@@ -569,13 +574,41 @@ func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error)
 				return n, errors.Join(passErr, err)
 			}
 			excluded = append(excluded, event.ID)
-			passErr = errors.Join(passErr, fmt.Errorf("persist outbox event %s: %w", event.ID, err))
+			passErr = errors.Join(passErr, fmt.Errorf("claim outbox event %s: %w", event.ID, err))
 			continue
 		}
 		if event == nil {
 			break
 		}
-		if published {
+		// 2. Publish with no transaction or row lock held.
+		publishCtx, endPublish := context.WithTimeout(ctx, 2*time.Second)
+		pubErr := s.bus.Publish(publishCtx, event.RoutingKey, event.Payload, event.ID.String())
+		endPublish()
+		// 3. Persist the outcome in a second short transaction.
+		outcomeCtx, stopOutcome := context.WithTimeout(ctx, 4*time.Second)
+		outcomeErr := s.tx.WithinTransaction(outcomeCtx, func(txCtx context.Context) error {
+			if pubErr != nil {
+				telemetry.OutboxPublishFailures.Inc()
+				if event.RetryCount+1 >= domain.MaxOutboxRetries {
+					telemetry.OutboxDeadLettered.Inc()
+					slog.Error("outbox announcement dead-lettered", "outbox_id", event.ID,
+						"job_id", event.JobID, "attempts", event.RetryCount+1)
+				}
+				reason := "broker publish failed"
+				if errors.Is(pubErr, context.DeadlineExceeded) {
+					reason = "broker publish timed out"
+				}
+				return s.outbox.MarkFailed(txCtx, event.ID, reason)
+			}
+			return s.outbox.MarkPublished(txCtx, event.ID)
+		})
+		stopOutcome()
+		if outcomeErr != nil {
+			excluded = append(excluded, event.ID)
+			passErr = errors.Join(passErr, fmt.Errorf("persist outbox event %s: %w", event.ID, outcomeErr))
+			continue
+		}
+		if pubErr == nil {
 			n++
 		}
 	}

@@ -41,8 +41,9 @@ func TestAuthenticatorCredentialScopesForEveryRPC(t *testing.T) {
 	}{
 		{"SchedulerService", "tenant-key", []string{"SubmitJob", "GetJob", "ListJobs", "CancelJob", "GetJobEvents", "RequeueDeadJob"}},
 		{"SchedulerService", "worker-key", []string{"ReportJobCompletion"}},
-		{"WorkerService", "worker-key", []string{"Execute", "Heartbeat", "GetWorkerStatus", "CancelExecution", "DrainWorker"}},
+		{"WorkerService", "worker-key", []string{"Execute", "Heartbeat"}},
 		{"SchedulerService", "admin-key", []string{"Dispatch", "TriggerReconciliation"}},
+		{"WorkerService", "admin-key", []string{"GetWorkerStatus", "CancelExecution", "DrainWorker"}},
 	}
 	for _, group := range groups {
 		for _, method := range group.methods {
@@ -98,7 +99,7 @@ func TestAuthenticatorFailsClosedAndRemovesBearerMetadata(t *testing.T) {
 	}
 	ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "Bearer worker-key", "traceparent", "trace-value"))
 	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer worker-key", "tracestate", "trace-state"))
-	_, err := auth(ctx, nil, &grpc.UnaryServerInfo{FullMethod: apiv1.WorkerService_GetWorkerStatus_FullMethodName}, func(ctx context.Context, _ any) (any, error) {
+	_, err := auth(ctx, nil, &grpc.UnaryServerInfo{FullMethod: apiv1.WorkerService_Heartbeat_FullMethodName}, func(ctx context.Context, _ any) (any, error) {
 		incoming, _ := metadata.FromIncomingContext(ctx)
 		outgoing, _ := metadata.FromOutgoingContext(ctx)
 		if len(incoming.Get("authorization")) != 0 || len(outgoing.Get("authorization")) != 0 || incoming.Get("traceparent")[0] != "trace-value" || outgoing.Get("tracestate")[0] != "trace-state" {
@@ -511,5 +512,73 @@ func TestRPCWorkerCompletionCannotPersistRawHandlerErrors(t *testing.T) {
 		if !found {
 			t.Fatal("worker completion audit event missing")
 		}
+	}
+}
+
+// ownedJob is the tenant-fencing check on every job-scoped RPC. An
+// unauthenticated call has no identity to compare against, so it must fail
+// closed before the job is read; the old code returned the job to any caller
+// that reached it without an authenticated interceptor context.
+func TestOwnedJobFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, nil, nil)
+	sc := NewSchedulerServer(s)
+	tn, _ := domain.NewTenant("acme", "owned-job-key")
+	if err := b.Tenants.Create(ctx, tn); err != nil {
+		t.Fatal(err)
+	}
+	job, err := domain.NewJob(tn.ID, "j", nil, domain.PriorityDefault, 1, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Jobs.Create(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := sc.ownedJob(context.Background(), job.ID)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated ownedJob must fail closed: job=%+v err=%v", got, err)
+	}
+	if got != nil {
+		t.Fatalf("unauthenticated ownedJob must not return the job: %+v", got)
+	}
+}
+
+// ownsJobMetadata gates GetJobEvents, which has no tenant check of its own, so
+// an unauthenticated call must fail closed before the job is read.
+func TestOwnsJobMetadataFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, nil, nil)
+	sc := NewSchedulerServer(s)
+	tn, _ := domain.NewTenant("acme", "owns-metadata-key")
+	if err := b.Tenants.Create(ctx, tn); err != nil {
+		t.Fatal(err)
+	}
+	job, err := domain.NewJob(tn.ID, "j", nil, domain.PriorityDefault, 1, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Jobs.Create(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sc.ownsJobMetadata(context.Background(), job.ID); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated ownsJobMetadata must fail closed: %v", err)
+	}
+	authed := context.WithValue(ctx, identityKey{}, identity{tenant: tn.ID, role: roleTenant})
+	if err := sc.ownsJobMetadata(authed, job.ID); err != nil {
+		t.Fatalf("authenticated tenant must still read its own job metadata: %v", err)
+	}
+	other, _ := domain.NewTenant("other", "owns-metadata-key-2")
+	if err := b.Tenants.Create(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	authed = context.WithValue(ctx, identityKey{}, identity{tenant: other.ID, role: roleTenant})
+	if err := sc.ownsJobMetadata(authed, job.ID); !errors.Is(err, domain.ErrJobNotFound) {
+		t.Fatalf("foreign tenant must not read job metadata: %v", err)
 	}
 }

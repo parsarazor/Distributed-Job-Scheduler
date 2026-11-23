@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 
+	"strconv"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,13 +28,15 @@ var (
 	OutboxDepth           = prometheus.NewGauge(prometheus.GaugeOpts{Name: "scheduler_outbox_pending", Help: "Unpublished outbox messages."})
 	HandlerErrors         = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "scheduler_handler_failures_total", Help: "Handler failures by error category."}, []string{"kind"})
 	OutboxPublishFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_publish_failures_total", Help: "Failed outbox publish attempts."})
+	OutboxDeadLettered    = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_dead_lettered_total", Help: "Outbox announcements moved to the dead letter."})
+	OutboxExhaustedJobs   = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_exhausted_jobs_total", Help: "Jobs terminalized after their dispatch announcements exhausted the dead-letter cap."})
 	StatsSampleFailures   = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_stats_sample_failures_total", Help: "Failed persistent metrics samples."})
 	StatsLastSuccess      = prometheus.NewGauge(prometheus.GaugeOpts{Name: "scheduler_stats_last_success_timestamp_seconds", Help: "Unix time of the last successful persistent metrics sample, or zero if none."})
 )
 
 func init() {
 	prometheus.MustRegister(Transitions, LeaseLosses, Latency, QueueDepth, OutboxLag, OutboxDepth,
-		HandlerErrors, OutboxPublishFailures, StatsSampleFailures, StatsLastSuccess)
+		HandlerErrors, OutboxPublishFailures, OutboxDeadLettered, OutboxExhaustedJobs, StatsSampleFailures, StatsLastSuccess)
 	for _, kind := range []string{"error", "panic", "canceled", "timeout"} {
 		HandlerErrors.WithLabelValues(kind)
 	}
@@ -56,9 +60,24 @@ func Init(ctx context.Context, name string) (func(context.Context) error, error)
 		}
 		options = append(options, sdktrace.WithBatcher(exporter))
 	}
-	provider := sdktrace.NewTracerProvider(options...)
+	provider := sdktrace.NewTracerProvider(append(options, sdktrace.WithSampler(sdktrace.ParentBased(traceSampleRatio())))...)
 	otel.SetTracerProvider(provider)
 	return provider.Shutdown, nil
+}
+
+// traceSampleRatio reads OTEL_TRACES_SAMPLER_ARG (a ratio in [0,1]);
+// it defaults to full sampling, mirroring the OTEL spec's default sampler.
+func traceSampleRatio() sdktrace.Sampler {
+	arg := os.Getenv("OTEL_TRACES_SAMPLER_ARG")
+	if arg == "" {
+		return sdktrace.AlwaysSample()
+	}
+	ratio, err := strconv.ParseFloat(arg, 64)
+	if err != nil || ratio < 0 || ratio > 1 {
+		slog.Warn("invalid OTEL_TRACES_SAMPLER_ARG; sampling everything", "value", arg)
+		return sdktrace.AlwaysSample()
+	}
+	return sdktrace.TraceIDRatioBased(ratio)
 }
 
 func otlpTraceEndpoint() string {

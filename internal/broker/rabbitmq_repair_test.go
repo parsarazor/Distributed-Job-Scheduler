@@ -163,7 +163,7 @@ func TestRabbitMQ_PermanentPoisonQuarantinedAndTransientFailureDelayed(t *testin
 	ack := &fakeAcknowledger{conn: sub, settled: make(chan settlement, 1)}
 	sub.ch.deliveries <- amqp.Delivery{Acknowledger: ack, DeliveryTag: 1, Body: []byte("poison")}
 	p := await(t, written)
-	if p.exchange != "" || p.key != JobsQuarantineQueue || string(p.message.Body) != "poison" || p.message.DeliveryMode != amqp.Persistent {
+	if p.exchange != "jobs" || p.key != JobsQuarantineQueue || string(p.message.Body) != "poison" || p.message.DeliveryMode != amqp.Persistent {
 		t.Fatalf("quarantine publication=%+v", p)
 	}
 	assertPending(t, ack.settled)

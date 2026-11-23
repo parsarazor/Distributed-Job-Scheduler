@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_jobs_tenant_id_id;

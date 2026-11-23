@@ -163,7 +163,12 @@ func (r *RabbitMQBroker) newPublisher(ctx context.Context) (*publisherSession, e
 		returns:  session.ch.NotifyReturn(make(chan amqp.Return, 1)),
 	}
 	if err := withConnectionContext(ctx, session.conn, func() error {
-		if _, err := session.ch.QueueDeclare(JobsQuarantineQueue, true, false, false, false, nil); err != nil {
+		if _, err := session.ch.QueueDeclare(JobsQuarantineQueue, true, false, false, false, amqp.Table{
+			"x-message-ttl": int64(ExecutionMessageTTL / time.Millisecond),
+		}); err != nil {
+			return err
+		}
+		if err := session.ch.QueueBind(JobsQuarantineQueue, JobsQuarantineQueue, r.exchange, false, nil); err != nil {
 			return err
 		}
 		return session.ch.Confirm(false)
@@ -208,13 +213,15 @@ func (r *RabbitMQBroker) Publish(ctx context.Context, routingKey string, payload
 	}
 	publisher := r.publisher
 	err := withConnectionContext(ctx, publisher.conn, func() error {
-		// The default exchange routes by exact queue name. A wildcard binding
-		// on the public topic exchange must not confirm a missing jobs queue.
+		// Publish through the declared topic exchange. Both consumer queues are
+		// explicitly bound to it (jobs.execute and jobs.execute.quarantine), so
+		// routing is intentional: an unbound routing key is detected by the
+		// mandatory flag instead of silently creating an unroutable queue.
 		expiration := ""
 		if routingKey == JobsRoutingKey {
 			expiration = strconv.FormatInt(ExecutionMessageTTL.Milliseconds(), 10)
 		}
-		if err := publisher.ch.PublishWithContext(ctx, "", routingKey, true, false, amqp.Publishing{
+		if err := publisher.ch.PublishWithContext(ctx, r.exchange, routingKey, true, false, amqp.Publishing{
 			ContentType: "application/json", Body: payload, MessageId: messageID, DeliveryMode: amqp.Persistent,
 			Expiration: expiration,
 		}); err != nil {

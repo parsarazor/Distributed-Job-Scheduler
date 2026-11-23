@@ -228,6 +228,7 @@ func TestRabbitMQ_PublishDeclaresDurableRouteAndRetainsDuplicateIDs(t *testing.T
 		{method: "queue", name: JobsQueue, flags: []bool{true, false, false, false}},
 		{method: "bind", name: JobsQueue, key: JobsRoutingKey, exchange: "jobs", flags: []bool{false}},
 		{method: "queue", name: JobsQuarantineQueue, flags: []bool{true, false, false, false}},
+		{method: "bind", name: JobsQuarantineQueue, key: JobsQuarantineQueue, exchange: "jobs", flags: []bool{false}},
 		{method: "confirm"},
 	}
 	if !reflect.DeepEqual(conn.ch.topology, want) || conn.ch.confirmNoWait {
@@ -242,7 +243,7 @@ func TestRabbitMQ_PublishDeclaresDurableRouteAndRetainsDuplicateIDs(t *testing.T
 		t.Fatal("message IDs were deduplicated")
 	}
 	for _, p := range conn.ch.published {
-		if !p.mandatory || p.immediate || p.exchange != "" || p.key != JobsRoutingKey ||
+		if !p.mandatory || p.immediate || p.exchange != "jobs" || p.key != JobsRoutingKey ||
 			p.message.DeliveryMode != amqp.Persistent || p.message.ContentType != "application/json" || p.message.MessageId != "same-job" {
 			t.Fatalf("unsafe publication: %+v", p)
 		}
@@ -305,7 +306,7 @@ func TestRabbitMQ_PublishFailureRetiresSessionAndNextCallReconnects(t *testing.T
 			if err := b.Publish(context.Background(), JobsRoutingKey, nil, "job"); err != nil {
 				t.Fatal(err)
 			}
-			if attempts.Load() != 2 || len(second.ch.topology) != 5 || len(second.ch.published) != 1 {
+			if attempts.Load() != 2 || len(second.ch.topology) != 6 || len(second.ch.published) != 1 {
 				t.Fatal("next publish did not reconnect and restore topology")
 			}
 		})

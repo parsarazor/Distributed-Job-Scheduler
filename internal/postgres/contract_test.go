@@ -2,13 +2,17 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/testinfra"
 )
 
@@ -231,7 +235,7 @@ func TestLive_ExpiredLeaseSkipLockedAndReap(t *testing.T) {
 	}
 }
 
-func TestLive_OutboxSkipLocked(t *testing.T) {
+func TestLive_OutboxClaimSemantics(t *testing.T) {
 	p := openTestPool(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -245,61 +249,68 @@ func TestLive_OutboxSkipLocked(t *testing.T) {
 	if err := r.Outbox.Store(ctx, event); err != nil {
 		t.Fatal(err)
 	}
-	held, err := p.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = held.Rollback(context.Background()) }()
-	got, err := r.Outbox.FetchUnpublished(context.WithValue(ctx, txKey{}, held), 100000, 0)
-	if err != nil {
-		t.Fatalf("fetch: %v", err)
-	}
-	found := false
-	for _, e := range got {
-		if e.JobID == job.ID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("stored outbox row not returned by SKIP LOCKED fetch")
-	}
-	locked := make(map[uuid.UUID]bool, len(got))
-	for _, e := range got {
-		locked[e.ID] = true
-	}
-	skipCtx, stop := context.WithTimeout(ctx, time.Second)
-	err = p.WithinTransaction(skipCtx, func(txctx context.Context) error {
-		rows, err := r.Outbox.FetchUnpublished(txctx, 100000, 0)
-		if err != nil {
-			return err
-		}
-		for _, e := range rows {
-			if locked[e.ID] {
-				return fmt.Errorf("competing publisher selected locked event %s", e.ID)
-			}
-		}
-		return nil
-	})
-	stop()
-	if err != nil {
-		t.Fatalf("competing fetch must skip held outbox locks: %v", err)
-	}
-	if err := held.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
+	// Claim: publishing_since is stamped and committed.
+	var claimed *domain.OutboxEvent
 	if err := p.WithinTransaction(ctx, func(txctx context.Context) error {
-		rows, err := r.Outbox.FetchUnpublished(txctx, 100000, 0)
-		if err != nil {
-			return err
-		}
-		for _, e := range rows {
-			if e.ID == event.ID {
-				return r.Outbox.MarkPublished(txctx, e.ID)
-			}
-		}
-		return fmt.Errorf("released event %s was not available", event.ID)
+		var err error
+		claimed, err = r.Outbox.FetchPublishable(txctx, 0, nil)
+		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if claimed == nil || claimed.ID != event.ID {
+		t.Fatalf("due event must be claimable, got %+v", claimed)
+	}
+	// A live claim is not handed to a second publisher.
+	second, err := r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil || second != nil {
+		t.Fatalf("live claim must not be re-claimable, got %v / %v", second, err)
+	}
+	// Age the claim past the publishing lease, then reclaim.
+	if _, err := p.pool.Exec(ctx, `UPDATE job_outbox SET publishing_since = clock_timestamp() - make_interval(secs => $1) WHERE id=$2`,
+		int64(domain.PublishingLease/time.Second)+1, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := r.Outbox.ReclaimStalePublishing(ctx); err != nil || n != 1 {
+		t.Fatalf("stale claim must be reclaimed: n=%d err=%v", n, err)
+	}
+	reclaimed, err := r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil || reclaimed == nil || reclaimed.ID != event.ID {
+		t.Fatalf("reclaimed event must be claimable again, got %v / %v", reclaimed, err)
+	}
+	if err := r.Outbox.MarkPublished(ctx, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil || gone != nil {
+		t.Fatalf("published event must not be claimable, got %v / %v", gone, err)
+	}
+
+	// Dead-letter: after the retry ceiling the row stops being claimable.
+	event2 := domain.NewOutboxEvent(job.ID, "jobs.execute", nil)
+	if err := r.Outbox.Store(ctx, event2); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= domain.MaxOutboxRetries; i++ {
+		if err := r.Outbox.MarkFailed(ctx, event2.ID, "broker down"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows2, err := r.Outbox.FetchUnpublished(ctx, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := map[uuid.UUID]domain.OutboxEvent{}
+	for _, e := range rows2 {
+		dead[e.ID] = *e
+	}
+	dl, ok := dead[event2.ID]
+	if !ok || !dl.DeadLettered || dl.RetryCount != domain.MaxOutboxRetries {
+		t.Fatalf("row must be dead-lettered at ceiling, got %+v", dl)
+	}
+	again, err := r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil || again != nil {
+		t.Fatalf("dead-lettered row must not be claimable, got %v / %v", again, err)
 	}
 }
 
@@ -321,5 +332,385 @@ func TestLive_TransactionAtomicity(t *testing.T) {
 	}
 	if _, err := r.Jobs.GetByID(ctx, job.ID); err != domain.ErrJobNotFound {
 		t.Fatalf("rolled-back job must not exist, got %v", err)
+	}
+}
+
+// --- Live dead-letter recovery and retention coverage ---
+
+type liveOutboxRow struct {
+	Published    bool
+	DeadLettered bool
+	RetryCount   int
+	CreatedAt    time.Time
+}
+
+func liveCreateJob(t *testing.T, ctx context.Context, r *Repositories, tenantID uuid.UUID, name string) *domain.Job {
+	t.Helper()
+	job, err := domain.NewJob(tenantID, name, json.RawMessage(`{"work":1}`), domain.PriorityDefault, 3, nil, time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("new job: %v", err)
+	}
+	if err := r.Jobs.Create(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	return job
+}
+
+func liveBackdateDispatch(t *testing.T, ctx context.Context, r *Repositories, p *Pool, job *domain.Job, age time.Duration) {
+	t.Helper()
+	if err := r.Jobs.MarkDispatched(ctx, job.ID, job.FencingToken); err != nil {
+		t.Fatalf("mark dispatched: %v", err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE jobs SET dispatched_at=clock_timestamp()-make_interval(secs => $1) WHERE id=$2`, age.Seconds(), job.ID); err != nil {
+		t.Fatalf("backdate dispatch: %v", err)
+	}
+}
+
+func liveDeadLetter(t *testing.T, ctx context.Context, r *Repositories, jobID uuid.UUID, createdAt time.Time) *domain.OutboxEvent {
+	t.Helper()
+	e := domain.NewOutboxEvent(jobID, broker.JobsRoutingKey, json.RawMessage(`{"attempt":0}`))
+	e.DeadLettered = true
+	e.RetryCount = domain.MaxOutboxRetries
+	e.CreatedAt = createdAt
+	if err := r.Outbox.Store(ctx, e); err != nil {
+		t.Fatalf("store dead-lettered event: %v", err)
+	}
+	return e
+}
+
+func liveOutboxRows(t *testing.T, ctx context.Context, p *Pool, jobID uuid.UUID) map[uuid.UUID]liveOutboxRow {
+	t.Helper()
+	rows, err := p.pool.Query(ctx, `SELECT id, published, dead_lettered, retry_count, created_at FROM job_outbox WHERE job_id=$1`, jobID)
+	if err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]liveOutboxRow)
+	for rows.Next() {
+		var id uuid.UUID
+		var row liveOutboxRow
+		if err := rows.Scan(&id, &row.Published, &row.DeadLettered, &row.RetryCount, &row.CreatedAt); err != nil {
+			t.Fatalf("scan outbox: %v", err)
+		}
+		out[id] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate outbox: %v", err)
+	}
+	return out
+}
+
+func liveGetJob(t *testing.T, ctx context.Context, r *Repositories, id uuid.UUID) *domain.Job {
+	t.Helper()
+	job, err := r.Jobs.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("get job %s: %v", id, err)
+	}
+	return job
+}
+
+func TestLive_RecoverStaleDispatchPastDeadLetteredAnnouncement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+
+	job := liveCreateJob(t, ctx, r, tn.ID, "dead-letter-recovery")
+	liveBackdateDispatch(t, ctx, r, p, job, time.Hour)
+	dead := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{"attempt":0}`))
+	dead.ID = domain.DispatchID(job.ID, job.AttemptCount, job.FencingToken)
+	dead.DeadLettered = true
+	dead.RetryCount = domain.MaxOutboxRetries
+	dead.CreatedAt = time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	if err := r.Outbox.Store(ctx, dead); err != nil {
+		t.Fatalf("store dead-lettered event: %v", err)
+	}
+
+	if err := r.Jobs.RecoverStaleDispatches(ctx, 10, time.Minute); err != nil {
+		t.Fatalf("recover stale dispatch: %v", err)
+	}
+	recovered := liveGetJob(t, ctx, r, job.ID)
+	if recovered.DispatchedAt != nil {
+		t.Fatalf("stale dispatch must be released despite the dead-lettered row, got dispatched_at=%v", recovered.DispatchedAt)
+	}
+	if want := job.FencingToken + 1; recovered.FencingToken != want {
+		t.Fatalf("fencing token = %d, want %d", recovered.FencingToken, want)
+	}
+
+	claimed, err := r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil {
+		t.Fatalf("fetch publishable before re-dispatch: %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("dead-lettered row must not be claimed, got %s", claimed.ID)
+	}
+
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, nil, nil)
+	s.RedispatchAfter = time.Minute
+	n, err := s.DispatchReady(ctx, 10)
+	if err != nil {
+		t.Fatalf("dispatch ready: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("re-dispatch count = %d, want 1", n)
+	}
+
+	redriven := liveGetJob(t, ctx, r, job.ID)
+	if redriven.DispatchedAt == nil {
+		t.Fatal("job must be re-staged with a fresh dispatched_at")
+	}
+	if redriven.FencingToken != recovered.FencingToken {
+		t.Fatalf("re-dispatch must keep the recovery fencing token %d, got %d", recovered.FencingToken, redriven.FencingToken)
+	}
+
+	rows := liveOutboxRows(t, ctx, p, job.ID)
+	if len(rows) != 2 {
+		t.Fatalf("outbox rows = %d, want the dead letter plus one fresh announcement", len(rows))
+	}
+	kept, ok := rows[dead.ID]
+	if !ok {
+		t.Fatal("old dead-lettered row must remain untouched")
+	}
+	if kept.Published || !kept.DeadLettered || kept.RetryCount != domain.MaxOutboxRetries {
+		t.Fatalf("dead-lettered row was mutated: %+v", kept)
+	}
+	if !kept.CreatedAt.Equal(dead.CreatedAt) {
+		t.Fatalf("dead-lettered created_at = %v, want %v", kept.CreatedAt, dead.CreatedAt)
+	}
+
+	wantStaged := domain.DispatchID(job.ID, redriven.AttemptCount, redriven.FencingToken)
+	if _, ok := rows[wantStaged]; !ok {
+		t.Fatalf("missing fresh publishable outbox row %s in %v", wantStaged, rows)
+	}
+	claimed, err = r.Outbox.FetchPublishable(ctx, 0, nil)
+	if err != nil {
+		t.Fatalf("fetch publishable after re-dispatch: %v", err)
+	}
+	if claimed == nil || claimed.ID != wantStaged {
+		t.Fatalf("FetchPublishable = %v, want fresh row %s", claimed, wantStaged)
+	}
+}
+
+func TestLive_TenantCreditsRecoverFromDeadLetteredAnnouncements(t *testing.T) {
+	const jobs = 10
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+
+	ids := make([]uuid.UUID, 0, jobs)
+	for i := 0; i < jobs; i++ {
+		job := liveCreateJob(t, ctx, r, tn.ID, fmt.Sprintf("starved-%02d", i))
+		liveBackdateDispatch(t, ctx, r, p, job, time.Hour)
+		liveDeadLetter(t, ctx, r, job.ID, time.Now().UTC().Add(-2*time.Hour))
+		ids = append(ids, job.ID)
+	}
+
+	before, err := r.Jobs.GetUndispatchedJobsForUpdate(ctx, jobs)
+	if err != nil {
+		t.Fatalf("list ready before recovery: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("dispatched jobs must not be ready before recovery, got %d", len(before))
+	}
+
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, nil, nil)
+	s.RedispatchAfter = time.Minute
+	n, err := s.DispatchReady(ctx, jobs)
+	if err != nil {
+		t.Fatalf("dispatch ready: %v", err)
+	}
+	if n != jobs {
+		t.Fatalf("re-dispatched = %d, want all %d jobs; tenant stayed starved", n, jobs)
+	}
+	rows := liveOutboxRows(t, ctx, p, ids[0])
+	if len(rows) != 2 {
+		t.Fatalf("outbox rows for first job = %d, want dead letter plus fresh announcement", len(rows))
+	}
+
+	for _, id := range ids {
+		got := liveGetJob(t, ctx, r, id)
+		if got.DispatchedAt == nil {
+			t.Fatalf("job %s was not re-staged", id)
+		}
+		if got.FencingToken != 1 {
+			t.Fatalf("job %s fencing token = %d, want 1", id, got.FencingToken)
+		}
+	}
+
+	// The ten recovered attempts legitimately consume the tenant's ten dispatch
+	// credits. Settle them the way a worker and broker would, then a brand-new
+	// job must still be dispatchable.
+	if _, err := p.pool.Exec(ctx, `UPDATE job_outbox o SET published=TRUE, published_at=clock_timestamp(), delivered_at=clock_timestamp()
+		WHERE NOT o.dead_lettered AND o.job_id IN (SELECT id FROM jobs WHERE tenant_id=$1)`, tn.ID); err != nil {
+		t.Fatalf("settle outbox rows: %v", err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE jobs SET status='succeeded', dispatched_at=NULL WHERE tenant_id=$1`, tn.ID); err != nil {
+		t.Fatalf("settle jobs: %v", err)
+	}
+
+	fresh := liveCreateJob(t, ctx, r, tn.ID, "after-recovery")
+	if n, err := s.DispatchReady(ctx, jobs); err != nil {
+		t.Fatalf("dispatch fresh job: %v", err)
+	} else if n != 1 {
+		t.Fatalf("fresh job dispatch count = %d, want 1", n)
+	}
+	if got := liveGetJob(t, ctx, r, fresh.ID); got.DispatchedAt == nil {
+		t.Fatal("fresh job must be dispatched after the tenant's credits are released")
+	}
+}
+
+func TestLive_TerminalizePoisonPillAtDeadLetterCap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+
+	job := liveCreateJob(t, ctx, r, tn.ID, "poison-pill")
+	liveBackdateDispatch(t, ctx, r, p, job, time.Hour)
+	for i := 0; i < domain.MaxDeadLetteredDispatches; i++ {
+		liveDeadLetter(t, ctx, r, job.ID, time.Now().UTC().Add(-2*time.Hour))
+	}
+
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, nil, nil)
+	s.RedispatchAfter = time.Minute
+	if n, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatalf("dispatch ready: %v", err)
+	} else if n != 0 {
+		t.Fatalf("poison pill must not be re-dispatched, got %d", n)
+	}
+
+	got := liveGetJob(t, ctx, r, job.ID)
+	if got.Status != domain.StatusDead {
+		t.Fatalf("poison pill status = %q, want %q", got.Status, domain.StatusDead)
+	}
+	if got.DispatchedAt != nil {
+		t.Fatalf("terminal job must release its dispatch credit, got dispatched_at=%v", got.DispatchedAt)
+	}
+
+	events, err := r.Events.ListByJobID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("list job events: %v", err)
+	}
+	var terminal *domain.JobEvent
+	for _, e := range events {
+		if e.ToStatus == domain.StatusDead {
+			terminal = e
+		}
+	}
+	if terminal == nil {
+		t.Fatalf("missing terminal job event, got %d events", len(events))
+	}
+	if terminal.FromStatus != domain.StatusPending {
+		t.Fatalf("terminal event from_status = %q, want %q", terminal.FromStatus, domain.StatusPending)
+	}
+	if terminal.ErrorMessage == nil || !strings.Contains(*terminal.ErrorMessage, "outbox publish exhausted") {
+		t.Fatalf("terminal event error_message = %v", terminal.ErrorMessage)
+	}
+	if terminal.OccurredAt.IsZero() {
+		t.Fatal("terminal event must record occurred_at")
+	}
+	if terminal.WorkerID != nil && *terminal.WorkerID != "" {
+		t.Fatalf("terminal event worker_id = %q, want empty audit field", *terminal.WorkerID)
+	}
+
+	rows := liveOutboxRows(t, ctx, p, job.ID)
+	if len(rows) != domain.MaxDeadLetteredDispatches {
+		t.Fatalf("outbox rows = %d, want only the dead letters", len(rows))
+	}
+	for id, row := range rows {
+		if row.Published || !row.DeadLettered {
+			t.Fatalf("unexpected live announcement %s after terminalization: %+v", id, row)
+		}
+	}
+
+	if n, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatalf("second dispatch ready: %v", err)
+	} else if n != 0 {
+		t.Fatalf("terminal job was re-dispatched, count = %d", n)
+	}
+	if got := liveGetJob(t, ctx, r, job.ID); got.Status != domain.StatusDead || got.DispatchedAt != nil {
+		t.Fatalf("terminal job mutated by later pass: status=%q dispatched_at=%v", got.Status, got.DispatchedAt)
+	}
+	if rows := liveOutboxRows(t, ctx, p, job.ID); len(rows) != domain.MaxDeadLetteredDispatches {
+		t.Fatalf("later pass staged an announcement for a terminal job: %d rows", len(rows))
+	}
+	events, err = r.Events.ListByJobID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("list job events after second pass: %v", err)
+	}
+	deadEvents := 0
+	for _, e := range events {
+		if e.ToStatus == domain.StatusDead {
+			deadEvents++
+		}
+	}
+	if deadEvents != 1 {
+		t.Fatalf("terminal event recorded %d times, want once", deadEvents)
+	}
+}
+
+func TestLive_PruneDeadLetterRetention(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	job := liveCreateJob(t, ctx, r, tn.ID, "retention")
+
+	now := time.Now().UTC()
+	oldPublished := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{}`))
+	oldPublished.Published = true
+	oldPublished.CreatedAt = now.Add(-2 * time.Hour)
+	publishedAt := now.Add(-2 * time.Hour)
+	oldPublished.PublishedAt = &publishedAt
+	if err := r.Outbox.Store(ctx, oldPublished); err != nil {
+		t.Fatalf("store old published row: %v", err)
+	}
+
+	recentDead := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{}`))
+	recentDead.DeadLettered = true
+	recentDead.RetryCount = domain.MaxOutboxRetries
+	recentDead.CreatedAt = now.Add(-time.Hour)
+	if err := r.Outbox.Store(ctx, recentDead); err != nil {
+		t.Fatalf("store recent dead letter: %v", err)
+	}
+
+	oldDead := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{}`))
+	oldDead.DeadLettered = true
+	oldDead.RetryCount = domain.MaxOutboxRetries
+	oldDead.CreatedAt = now.Add(-domain.DeadLetterRetention - time.Hour)
+	if err := r.Outbox.Store(ctx, oldDead); err != nil {
+		t.Fatalf("store old dead letter: %v", err)
+	}
+
+	if err := p.Prune(ctx, time.Hour, time.Hour); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	rows := liveOutboxRows(t, ctx, p, job.ID)
+	if len(rows) != 1 {
+		t.Fatalf("outbox rows after prune = %d, want only the in-window dead letter", len(rows))
+	}
+	if _, ok := rows[recentDead.ID]; !ok {
+		t.Fatalf("dead letter inside the retention window was deleted")
+	}
+	if _, ok := rows[oldPublished.ID]; ok {
+		t.Fatalf("published row past the outbox age was not deleted")
+	}
+	if _, ok := rows[oldDead.ID]; ok {
+		t.Fatalf("dead letter past the retention window was not deleted")
+	}
+}
+
+func TestLive_CheckSchemaAtCurrentVersion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	if err := p.CheckSchema(ctx); err != nil {
+		t.Fatalf("CheckSchema at version %d: %v", SchemaVersion, err)
 	}
 }

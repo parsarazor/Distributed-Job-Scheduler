@@ -406,7 +406,7 @@ func TestPostgresScheduler(t *testing.T) {
 		}
 	})
 
-	t.Run("failed publish remains retryable", func(t *testing.T) {
+	t.Run("failed publish dead-letters at the retry ceiling", func(t *testing.T) {
 		f := newFixture(t, server)
 		f.submit(t, "publish-retry", 3, nil, time.Time{})
 		if _, err := f.sched.DispatchReady(f.ctx, 100); err != nil {
@@ -418,35 +418,42 @@ func TestPostgresScheduler(t *testing.T) {
 			t.Fatalf("failed publish must not count as published: n=%d err=%v", n, err)
 		}
 		rows := unpublished(t, f)
-		if len(rows) != 1 || rows[0].Published || rows[0].RetryCount != 1 || rows[0].NextPublishAt == nil || rows[0].LastError == nil || *rows[0].LastError != "broker publish failed" {
+		if len(rows) != 1 || rows[0].Published || rows[0].DeadLettered || rows[0].RetryCount != 1 || rows[0].NextPublishAt == nil || rows[0].LastError == nil || *rows[0].LastError != "broker publish failed" {
 			t.Fatalf("failed publish must retain one retryable row and its error: %+v", rows)
 		}
 		if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 0 {
 			t.Fatalf("retry must respect its backoff: n=%d err=%v", n, err)
 		}
 		conn := repairSQL(t, f)
-		for range domain.MaxOutboxRetries {
+		for range domain.MaxOutboxRetries - 1 {
 			// Advance only the disposable row's retry clock, so the test crosses
-			// the alert threshold without waiting through exponential delays.
-			if _, err := conn.Exec(f.ctx, `UPDATE job_outbox SET next_publish_at=clock_timestamp()-interval '1 second'`); err != nil {
+			// the ceiling without waiting through exponential delays.
+			if _, err := conn.Exec(f.ctx, `UPDATE job_outbox SET next_publish_at=clock_timestamp()-interval '1 second' WHERE NOT published AND NOT dead_lettered`); err != nil {
 				t.Fatal(err)
 			}
 			if n, err := failed.ReconcileOutbox(f.ctx, 1); err != nil || n != 0 {
 				t.Fatalf("failed retry=%d err=%v", n, err)
 			}
 		}
+		attempts := len(failedBus.published())
+		if attempts != domain.MaxOutboxRetries {
+			t.Fatalf("publish attempts=%d want the ceiling of %d", attempts, domain.MaxOutboxRetries)
+		}
 		retained := unpublished(t, f)
-		if len(retained) != 1 || retained[0].RetryCount != domain.MaxOutboxRetries+1 || retained[0].ID != rows[0].ID {
-			t.Fatalf("extended outage abandoned or replaced event: %+v", retained)
+		if len(retained) != 1 || !retained[0].DeadLettered || retained[0].Published || retained[0].RetryCount != domain.MaxOutboxRetries || retained[0].ID != rows[0].ID {
+			t.Fatalf("retry ceiling must dead-letter the event rather than abandon it: %+v", retained)
 		}
 		if _, err := conn.Exec(f.ctx, `UPDATE job_outbox SET next_publish_at=clock_timestamp()-interval '1 second'`); err != nil {
 			t.Fatal(err)
 		}
-		if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 1 {
-			t.Fatalf("successful retry must publish the retained event: n=%d err=%v", n, err)
+		if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 0 {
+			t.Fatalf("dead-lettered event must not be published again: n=%d err=%v", n, err)
 		}
-		if len(unpublished(t, f)) != 0 || f.bus.published()[0].MessageID != rows[0].ID.String() {
-			t.Fatal("retry must preserve the outbox message identity")
+		if len(f.bus.published()) != 0 || len(failedBus.published()) != attempts {
+			t.Fatalf("dead-lettered event was re-published: healthy=%d failed=%d", len(f.bus.published()), len(failedBus.published()))
+		}
+		if again := unpublished(t, f); len(again) != 1 || !again[0].DeadLettered || again[0].RetryCount != domain.MaxOutboxRetries {
+			t.Fatalf("dead-lettered event must remain inspectable and unchanged: %+v", again)
 		}
 	})
 
@@ -538,13 +545,50 @@ func TestPostgresScheduler(t *testing.T) {
 					t.Fatalf("operation must return injected failure: %v", err)
 				}
 				after := snapshot(t, f)
-				if !reflect.DeepEqual(before, after) {
-					t.Fatalf("failed transaction changed jobs, audits or outbox:\nbefore=%+v\nafter=%+v", before, after)
-				}
-				if tc.operation == "reconcile" {
-					if len(f.bus.published()) != 1 || len(after.outbox) != 1 {
-						t.Fatal("publish cannot roll back; its outbox row must remain available for safe redelivery")
+				if tc.operation != "reconcile" {
+					if !reflect.DeepEqual(before, after) {
+						t.Fatalf("failed transaction changed jobs, audits or outbox:\nbefore=%+v\nafter=%+v", before, after)
 					}
+					return
+				}
+				// The publish marker is a second committed phase: a failed
+				// MarkPublished may leave only the committed publishing_since
+				// claim, never published state or a partial outcome.
+				if !reflect.DeepEqual(before.jobs, after.jobs) || !reflect.DeepEqual(before.events, after.events) {
+					t.Fatalf("failed marker leaked job or audit state:\nbefore=%+v\nafter=%+v", before, after)
+				}
+				if len(before.outbox) != 1 || len(after.outbox) != 1 {
+					t.Fatalf("publish outcome lost its outbox row: before=%d after=%d", len(before.outbox), len(after.outbox))
+				}
+				claimed, original := after.outbox[0], *before.outbox[0]
+				if claimed.ID != original.ID || claimed.Published || claimed.DeadLettered || claimed.PublishingSince == nil {
+					t.Fatalf("failed marker must leave the row unpublished under its claim: %+v", claimed)
+				}
+				expected := original
+				expected.PublishingSince = claimed.PublishingSince
+				if !reflect.DeepEqual(&expected, claimed) {
+					t.Fatalf("failed marker changed state beyond the publishing lease:\nwant=%+v\ngot=%+v", &expected, claimed)
+				}
+				if msgs := f.bus.published(); len(msgs) != 1 || msgs[0].MessageID != claimed.ID.String() {
+					t.Fatalf("failed marker must not roll back the broker publish: %+v", msgs)
+				}
+				if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 0 {
+					t.Fatalf("active claim was reclaimed prematurely: n=%d err=%v", n, err)
+				}
+				if _, err := repairSQL(t, f).Exec(f.ctx, `UPDATE job_outbox SET publishing_since=clock_timestamp()-make_interval(secs => $1::double precision) WHERE id=$2`, (domain.PublishingLease + time.Second).Seconds(), claimed.ID); err != nil {
+					t.Fatal(err)
+				}
+				if reclaimed, err := f.repos.Outbox.ReclaimStalePublishing(f.ctx); err != nil || reclaimed != 1 {
+					t.Fatalf("expired claim reclaimed=%d err=%v", reclaimed, err)
+				}
+				if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 1 {
+					t.Fatalf("reclaimed announcement republish=%d err=%v", n, err)
+				}
+				if left := unpublished(t, f); len(left) != 0 {
+					t.Fatalf("reclaimed announcement still unpublished: %+v", left)
+				}
+				if msgs := f.bus.published(); len(msgs) != 2 || msgs[0].MessageID != msgs[1].MessageID {
+					t.Fatalf("redelivery must preserve the message identity: %+v", msgs)
 				}
 			})
 		}

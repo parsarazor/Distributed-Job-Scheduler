@@ -24,7 +24,13 @@ proto:
 	  proto/v1/job.proto proto/v1/scheduler.proto proto/v1/worker.proto
 
 migrate:
-	migrate -path ./migrations -database "$${DATABASE_URL}" up
+	@u=$${DATABASE_URL}; \
+	case "$$u" in \
+		*options=*) dsn="$$u" ;; \
+		*\?*) dsn="$$u&options=-c%20lock_timeout%3D5s" ;; \
+		*) dsn="$$u?options=-c%20lock_timeout%3D5s" ;; \
+	esac; \
+	migrate -path ./migrations -database "$$dsn" up
 
 lint:
 	go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...

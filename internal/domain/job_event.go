@@ -14,6 +14,11 @@ func SafeHandlerMessages() []string {
 	return []string{"handler failed", "handler panicked", "handler canceled", "handler timed out", "handler not registered"}
 }
 
+// ReasonHandlerNotRegistered is both a safe handler message and the
+// non-retryable signal: ReportCompletion dead-letters a job whose failure
+// reason is this instead of consuming its retry budget.
+const ReasonHandlerNotRegistered = "handler not registered"
+
 func SafeHandlerMessage(message string) string {
 	for _, safe := range SafeHandlerMessages() {
 		if safe == message {

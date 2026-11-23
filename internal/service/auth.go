@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
@@ -49,15 +50,18 @@ var methodRoles = map[string]authRole{
 	apiv1.SchedulerService_TriggerReconciliation_FullMethodName: roleAdmin,
 	apiv1.WorkerService_Execute_FullMethodName:                  roleWorker,
 	apiv1.WorkerService_Heartbeat_FullMethodName:                roleWorker,
-	apiv1.WorkerService_GetWorkerStatus_FullMethodName:          roleWorker,
-	apiv1.WorkerService_CancelExecution_FullMethodName:          roleWorker,
-	apiv1.WorkerService_DrainWorker_FullMethodName:              roleWorker,
+	apiv1.WorkerService_GetWorkerStatus_FullMethodName:          roleAdmin,
+	apiv1.WorkerService_CancelExecution_FullMethodName:          roleAdmin,
+	apiv1.WorkerService_DrainWorker_FullMethodName:              roleAdmin,
 }
 
 // Authenticator resolves tenant identity from a bearer API key. Worker control
 // and scheduler administration require distinct, separately scoped credentials.
 // Omitting adminToken disables administration for compatibility with old callers.
+// Invalid API keys are negative-cached for a short TTL so a flood of bad
+// credentials cannot amplify into unbounded database load (review H2).
 func Authenticator(tenants repository.TenantRepository, workerToken string, adminToken ...string) grpc.UnaryServerInterceptor {
+	invalid := newNegativeKeyCache(4096, 5*time.Second)
 	var admin string
 	if len(adminToken) == 1 {
 		admin = adminToken[0]
@@ -94,11 +98,16 @@ func Authenticator(tenants repository.TenantRepository, workerToken string, admi
 			if tenants == nil {
 				return nil, status.Error(codes.Unavailable, "authentication unavailable")
 			}
-			tenant, err := tenants.GetByAPIKeyHash(ctx, domain.HashAPIKey(key))
+			digest := domain.HashAPIKey(key)
+			if invalid.recent(digest) {
+				return nil, status.Error(codes.Unauthenticated, "invalid credential")
+			}
+			tenant, err := tenants.GetByAPIKeyHash(ctx, digest)
 			switch {
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				return nil, toGRPCError(err)
 			case errors.Is(err, domain.ErrTenantNotFound):
+				invalid.remember(digest)
 				return nil, status.Error(codes.Unauthenticated, "invalid credential")
 			case err != nil || tenant == nil || tenant.ID == uuid.Nil:
 				return nil, status.Error(codes.Unavailable, "authentication unavailable")
@@ -134,23 +143,25 @@ func requestTenant(ctx context.Context, requested string) (uuid.UUID, error) {
 		}
 		return id.tenant, nil
 	}
-	id, err := uuid.Parse(requested)
-	if err != nil {
-		return uuid.Nil, status.Error(codes.InvalidArgument, "invalid tenant_id")
-	}
-	return id, nil
+	// Fail closed: a context without an authenticated identity must never fall
+	// back to a client-supplied tenant_id, or any transport that forgets to
+	// chain the auth interceptor silently grants cross-tenant access.
+	return uuid.Nil, status.Error(codes.Unauthenticated, "authentication required")
 }
 
 func (s *SchedulerServer) ownedJob(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
 	who, authenticated := ctx.Value(identityKey{}).(identity)
-	if authenticated && who.role != roleTenant {
+	if !authenticated {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if who.role != roleTenant {
 		return nil, errTenantCredentialRequired
 	}
 	job, err := s.sched.GetJob(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if authenticated && who.tenant != job.TenantID {
+	if who.tenant != job.TenantID {
 		return nil, domain.ErrJobNotFound
 	}
 	return job, nil
@@ -159,8 +170,7 @@ func (s *SchedulerServer) ownedJob(ctx context.Context, id uuid.UUID) (*domain.J
 func (s *SchedulerServer) ownsJobMetadata(ctx context.Context, id uuid.UUID) error {
 	who, authenticated := ctx.Value(identityKey{}).(identity)
 	if !authenticated {
-		_, err := s.sched.GetJob(ctx, id)
-		return err
+		return status.Error(codes.Unauthenticated, "authentication required")
 	}
 	if who.role != roleTenant {
 		return errTenantCredentialRequired

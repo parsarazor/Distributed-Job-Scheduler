@@ -103,7 +103,7 @@ func (r *JobRepo) RecoverStaleDispatches(ctx context.Context, limit int, age tim
 			delivered := now
 			e.DeliveredAt = &delivered
 		}
-		if !e.Published || (e.PublishedAt != nil && e.PublishedAt.After(cutoff)) {
+		if !e.DeadLettered && (!e.Published || (e.PublishedAt != nil && e.PublishedAt.After(cutoff))) {
 			protected[e.JobID] = true
 		}
 	}
@@ -125,4 +125,45 @@ func (r *JobRepo) RecoverStaleDispatches(ctx context.Context, limit int, age tim
 		j.UpdatedAt = now
 	}
 	return nil
+}
+
+// TerminalizeOutboxExhausted mirrors the PostgreSQL repair query: a pending
+// job whose announcements have dead-lettered maxDeadLettered times cannot be
+// delivered and would otherwise be re-dispatched on every recovery pass.
+func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDeadLettered int) ([]uuid.UUID, error) {
+	if limit <= 0 || maxDeadLettered <= 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	dead := make(map[uuid.UUID]int)
+	for _, e := range s.outbox {
+		if e.DeadLettered {
+			dead[e.JobID]++
+		}
+	}
+	var poisoned []*domain.Job
+	for _, j := range s.jobs {
+		if j.Status == domain.StatusPending && dead[j.ID] >= maxDeadLettered {
+			poisoned = append(poisoned, j)
+		}
+	}
+	sort.Slice(poisoned, func(i, j int) bool {
+		if !poisoned[i].UpdatedAt.Equal(poisoned[j].UpdatedAt) {
+			return poisoned[i].UpdatedAt.Before(poisoned[j].UpdatedAt)
+		}
+		return uuidLess(poisoned[i].ID, poisoned[j].ID)
+	})
+	now := time.Now().UTC()
+	var ids []uuid.UUID
+	for _, j := range poisoned[:min(len(poisoned), limit)] {
+		j.Status = domain.StatusDead
+		j.DispatchedAt = nil
+		j.UpdatedAt = now
+		ids = append(ids, j.ID)
+	}
+	return ids, nil
 }

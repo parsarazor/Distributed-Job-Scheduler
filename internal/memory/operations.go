@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 )
 
@@ -35,6 +36,10 @@ func (t *Transactor) Prune(ctx context.Context, outboxAge, auditAge time.Duratio
 	defer t.s.mu.Unlock()
 	for id, e := range t.s.outbox {
 		if e.PublishedAt != nil && time.Since(*e.PublishedAt) > outboxAge {
+			delete(t.s.outbox, id)
+			continue
+		}
+		if e.DeadLettered && time.Since(e.CreatedAt) > domain.DeadLetterRetention {
 			delete(t.s.outbox, id)
 		}
 	}

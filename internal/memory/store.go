@@ -948,10 +948,15 @@ func (r *OutboxRepo) FetchPublishable(ctx context.Context, olderThan time.Durati
 	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-olderThan)
+	lease := now.Add(-domain.PublishingLease)
 	var first *domain.OutboxEvent
 	for _, e := range s.outbox {
-		if e.Published || e.CreatedAt.After(cutoff) || excluded[e.ID] ||
+		if e.Published || e.DeadLettered || e.CreatedAt.After(cutoff) || excluded[e.ID] ||
 			(e.NextPublishAt != nil && e.NextPublishAt.After(now)) {
+			continue
+		}
+		// Skip rows claimed by a live publisher; stale claims are reclaimed below.
+		if e.PublishingSince != nil && e.PublishingSince.After(lease) {
 			continue
 		}
 		if first == nil || e.CreatedAt.Before(first.CreatedAt) ||
@@ -962,7 +967,28 @@ func (r *OutboxRepo) FetchPublishable(ctx context.Context, olderThan time.Durati
 	if first == nil {
 		return nil, nil
 	}
-	return cloneOutbox(first), nil
+	claimed := cloneOutbox(first)
+	claimTime := time.Now().UTC()
+	first.PublishingSince = &claimTime
+	return claimed, nil
+}
+
+// ReclaimStalePublishing releases outbox claims older than the publishing lease.
+func (r *OutboxRepo) ReclaimStalePublishing(ctx context.Context) (int64, error) {
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return 0, err
+	}
+	defer s.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-domain.PublishingLease)
+	var reclaimed int64
+	for _, e := range s.outbox {
+		if !e.Published && !e.DeadLettered && e.PublishingSince != nil && e.PublishingSince.Before(cutoff) {
+			e.PublishingSince = nil
+			reclaimed++
+		}
+	}
+	return reclaimed, nil
 }
 
 func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
@@ -977,6 +1003,7 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
 		return nil
 	}
 	e.MarkPublished()
+	e.PublishingSince = nil
 	e.NextPublishAt = nil
 	return nil
 }
@@ -993,6 +1020,11 @@ func (r *OutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, lastErr strin
 		return nil
 	}
 	e.RecordFailure(lastErr)
+	e.PublishingSince = nil
+	if e.ExceededMaxRetries() {
+		e.DeadLettered = true
+		e.NextPublishAt = nil
+	}
 	return nil
 }
 

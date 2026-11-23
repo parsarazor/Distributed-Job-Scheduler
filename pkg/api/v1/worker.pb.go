@@ -283,12 +283,15 @@ func (*GetWorkerStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type ActiveJobInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FencingToken  int64                  `protobuf:"varint,5,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	JobId     string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	TenantId  string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name      string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	StartedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// Deprecated: never populated; fencing tokens must not leave the lease path.
+	//
+	// Deprecated: Marked as deprecated in proto/v1/worker.proto.
+	FencingToken  int64 `protobuf:"varint,5,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -351,6 +354,7 @@ func (x *ActiveJobInfo) GetStartedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// Deprecated: Marked as deprecated in proto/v1/worker.proto.
 func (x *ActiveJobInfo) GetFencingToken() int64 {
 	if x != nil {
 		return x.FencingToken
@@ -678,14 +682,14 @@ const file_proto_v1_worker_proto_rawDesc = "" +
 	"\arenewed\x18\x01 \x01(\bR\arenewed\x12'\n" +
 	"\x0fabort_requested\x18\x02 \x01(\bR\x0eabortRequested\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\"\x18\n" +
-	"\x16GetWorkerStatusRequest\"\xb7\x01\n" +
+	"\x16GetWorkerStatusRequest\"\xbb\x01\n" +
 	"\rActiveJobInfo\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x129\n" +
 	"\n" +
-	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12#\n" +
-	"\rfencing_token\x18\x05 \x01(\x03R\ffencingToken\"\xb8\x02\n" +
+	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12'\n" +
+	"\rfencing_token\x18\x05 \x01(\x03B\x02\x18\x01R\ffencingToken\"\xb8\x02\n" +
 	"\x17GetWorkerStatusResponse\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12*\n" +
 	"\x11active_jobs_count\x18\x02 \x01(\x05R\x0factiveJobsCount\x12'\n" +

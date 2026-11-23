@@ -103,6 +103,7 @@ func parseDatabaseConfig(raw string, development bool) (*pgxpool.Config, error) 
 		// pgx parse errors can contain the connection string.
 		return nil, errors.New("invalid DATABASE_URL")
 	}
+	applyDatabaseDefaults(cfg, os.Getenv)
 	if development {
 		return cfg, nil
 	}
@@ -125,6 +126,44 @@ func parseDatabaseConfig(raw string, development bool) (*pgxpool.Config, error) 
 		fallback.TLSConfig.MinVersion = tls.VersionTLS12
 	}
 	return cfg, nil
+}
+
+// applyDatabaseDefaults sets explicit pool bounds and Postgres session
+// timeouts so a slow query or a wedged transaction cannot pin the pool
+// indefinitely. Values are overridable via environment (DB_POOL_MAX_CONNS,
+// DB_POOL_MIN_CONNS, DB_STATEMENT_TIMEOUT, DB_IDLE_TX_TIMEOUT).
+func applyDatabaseDefaults(cfg *pgxpool.Config, lookup func(string) string) {
+	if v := lookup("DB_POOL_MAX_CONNS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 31); err == nil && n > 0 {
+			cfg.MaxConns = int32(n)
+		}
+	}
+	if cfg.MaxConns < 4 {
+		cfg.MaxConns = 4
+	}
+	if v := lookup("DB_POOL_MIN_CONNS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 31); err == nil && n >= 0 {
+			cfg.MinConns = int32(n)
+		}
+	} else {
+		cfg.MinConns = 1
+	}
+	statementTimeout := 30 * time.Second
+	if v := lookup("DB_STATEMENT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			statementTimeout = d
+		}
+	}
+	idleTxTimeout := 15 * time.Second
+	if v := lookup("DB_IDLE_TX_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			idleTxTimeout = d
+		}
+	}
+	// Session-level guards, applied on every new connection.
+	cfg.ConnConfig.RuntimeParams["options"] = fmt.Sprintf(
+		"-c statement_timeout=%d -c idle_in_transaction_session_timeout=%d",
+		statementTimeout.Milliseconds(), idleTxTimeout.Milliseconds())
 }
 
 func validateRabbitURL(raw string, development bool) error {

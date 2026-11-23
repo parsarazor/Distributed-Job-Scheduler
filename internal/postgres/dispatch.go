@@ -113,11 +113,45 @@ func (r *JobRepo) RecoverStaleDispatches(ctx context.Context, limit int, age tim
 		SELECT j.id FROM jobs j WHERE j.status='pending'
 		AND j.dispatched_at <= statement_timestamp()-make_interval(secs => $1)
 		AND NOT EXISTS (
-			SELECT 1 FROM job_outbox o WHERE o.job_id=j.id
+			SELECT 1 FROM job_outbox o WHERE o.job_id=j.id AND NOT o.dead_lettered
 			AND (NOT o.published OR o.published_at > statement_timestamp()-make_interval(secs => $1)))
 		ORDER BY j.dispatched_at, j.id LIMIT $2 FOR UPDATE SKIP LOCKED
 	)
 	UPDATE jobs j SET dispatched_at=NULL, fencing_token=j.fencing_token+1
 	FROM stale WHERE j.id=stale.id`, age.Seconds(), limit)
 	return err
+}
+
+// TerminalizeOutboxExhausted fails pending jobs whose dispatch announcements
+// have dead-lettered maxDeadLettered times. RecoverStaleDispatches would
+// otherwise stage another announcement on every pass, and each stranded
+// dispatch keeps consuming one of the tenant's dispatch credits.
+func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDeadLettered int) ([]uuid.UUID, error) {
+	if limit <= 0 || maxDeadLettered <= 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	rows, err := dbFromCtx(ctx, r.db).Query(ctx, `WITH poisoned AS (
+		SELECT j.id FROM jobs j
+		JOIN job_outbox o ON o.job_id=j.id AND o.dead_lettered
+		WHERE j.status='pending'
+		GROUP BY j.id
+		HAVING count(*) >= $1
+		ORDER BY min(j.updated_at), j.id LIMIT $2
+	)
+	UPDATE jobs j SET status='dead', dispatched_at=NULL, updated_at=clock_timestamp()
+	FROM poisoned WHERE j.id=poisoned.id AND j.status='pending'
+	RETURNING j.id`, maxDeadLettered, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
