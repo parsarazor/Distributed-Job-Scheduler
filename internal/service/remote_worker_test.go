@@ -13,6 +13,7 @@ import (
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc"
@@ -245,5 +246,56 @@ func TestWorkerRPCs_RequireWorkerCredentialAndBoundedLease(t *testing.T) {
 	}
 	if _, err := worker.RenewJobLease(context.Background(), &apiv1.RenewJobLeaseRequest{JobId: job.ID.String(), WorkerId: "w", FencingToken: 99, LeaseTtlMs: 1000}); !errors.Is(fromGRPCError(err), domain.ErrLeaseLost) {
 		t.Fatalf("renewal without a lease must map to ErrLeaseLost: %v", err)
+	}
+}
+
+// At-least-once delivery can hand worker B a duplicate announcement for a job
+// worker A already finished. B must settle it as done (Ack) without running it.
+func TestRemoteWorker_DuplicateOfAnotherWorkersFinishedJobIsAcked(t *testing.T) {
+	t.Parallel()
+	s, a := newRemotePair(t, workerTestKey, 30*time.Second)
+	b := NewRemoteWorker("worker-b", NewRemoteJobControl(dialScheduler(t, s, workerTestKey)), 2, 30*time.Second)
+	var runsA, runsB atomic.Int32
+	a.RegisterHandler("email", func(context.Context, *domain.Job) error { runsA.Add(1); return nil })
+	b.RegisterHandler("email", func(context.Context, *domain.Job) error { runsB.Add(1); return nil })
+	job, announcement := submitAndAnnounce(t, s, "email", `{}`)
+	if err := a.HandleMessage(context.Background(), announcement); err != nil {
+		t.Fatalf("worker A: %v", err)
+	}
+	if err := b.HandleMessage(context.Background(), announcement); err != nil {
+		t.Fatalf("duplicate delivery must be acked, got %v", err)
+	}
+	stored, _ := s.GetJob(context.Background(), job.ID)
+	if runsA.Load() != 1 || runsB.Load() != 0 || stored.Status != domain.StatusSucceeded || stored.LastLeaseOwner == nil || *stored.LastLeaseOwner != "remote-worker" {
+		t.Fatalf("duplicate changed the job: runsA=%d runsB=%d job=%+v", runsA.Load(), runsB.Load(), stored)
+	}
+}
+
+// A revoked credential must requeue the delivery (Nack, requeue) so a worker
+// with a valid credential still runs the job; it must never ack and drop it.
+func TestRemoteWorker_RevokedCredentialRequeuesDelivery(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newWiredPair()
+	s.SetWorkerCredentials(memory.NewWorkerCredentialRepo())
+	ctx := context.Background()
+	admin := dialScheduler(t, s, adminTestKey)
+	cred, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: "edge-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.RevokeWorkerCredential(ctx, &apiv1.RevokeWorkerCredentialRequest{CredentialId: cred.Credential.Id}); err != nil {
+		t.Fatal(err)
+	}
+	w := NewRemoteWorker("edge-1", NewRemoteJobControl(dialScheduler(t, s, cred.Token)), 2, 30*time.Second)
+	var runs atomic.Int32
+	w.RegisterHandler("email", func(context.Context, *domain.Job) error { runs.Add(1); return nil })
+	job, announcement := submitAndAnnounce(t, s, "email", `{}`)
+	err = w.HandleMessage(ctx, announcement)
+	if status.Code(err) != codes.Unauthenticated || broker.IsPermanent(err) {
+		t.Fatalf("revoked credential must return a retryable Unauthenticated error, got %v (permanent=%v)", err, broker.IsPermanent(err))
+	}
+	stored, _ := s.GetJob(ctx, job.ID)
+	if runs.Load() != 0 || stored.Status != domain.StatusPending || stored.LeaseOwner != nil {
+		t.Fatalf("revoked worker touched the job: runs=%d job=%+v", runs.Load(), stored)
 	}
 }
