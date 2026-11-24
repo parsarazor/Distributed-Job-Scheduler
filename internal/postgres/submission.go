@@ -64,5 +64,13 @@ func (r *JobRepo) RequeueDead(ctx context.Context, id uuid.UUID) (*domain.Job, e
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrInvalidTransition
 	}
-	return j, err
+	if err != nil {
+		return nil, err
+	}
+	// Earlier dead letters must not count against the new retry budget, or
+	// TerminalizeOutboxExhausted would kill the job again before dispatch.
+	if _, err := dbFromCtx(ctx, r.db).Exec(ctx, `DELETE FROM job_outbox WHERE job_id=$1 AND dead_lettered`, id); err != nil {
+		return nil, err
+	}
+	return j, nil
 }

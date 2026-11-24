@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -835,5 +836,32 @@ func TestLive_WorkerCredentials(t *testing.T) {
 	}
 	if _, err := r.WorkerCredentials.Revoke(ctx, uuid.New(), first); err != domain.ErrWorkerCredentialNotFound {
 		t.Fatalf("revoke missing: %v", err)
+	}
+}
+
+func TestLive_RequeueDeadResetsOutboxDeadLetterBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	job := liveCreateJob(t, ctx, r, tn.ID, "requeue-after-outbox-exhaustion")
+	for i := 0; i < domain.MaxDeadLetteredDispatches; i++ {
+		liveDeadLetter(t, ctx, r, job.ID, time.Now().UTC())
+	}
+	if ids, err := r.Jobs.TerminalizeOutboxExhausted(ctx, 10, domain.MaxDeadLetteredDispatches); err != nil || !slices.Contains(ids, job.ID) {
+		t.Fatalf("terminalize=%v err=%v", ids, err)
+	}
+	if _, err := r.Jobs.RequeueDead(ctx, job.ID); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	if ids, err := r.Jobs.TerminalizeOutboxExhausted(ctx, 10, domain.MaxDeadLetteredDispatches); err != nil || slices.Contains(ids, job.ID) {
+		t.Fatalf("requeued job terminalized again: ids=%v err=%v", ids, err)
+	}
+	if got := liveGetJob(t, ctx, r, job.ID); got.Status != domain.StatusPending {
+		t.Fatalf("status=%q, want pending", got.Status)
+	}
+	if rows := liveOutboxRows(t, ctx, p, job.ID); len(rows) != 0 {
+		t.Fatalf("old dead letters kept: %v", rows)
 	}
 }

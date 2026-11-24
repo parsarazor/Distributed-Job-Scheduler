@@ -255,3 +255,51 @@ func TestDispatchReady_TerminalizesPoisonPillAtDeadLetterCap(t *testing.T) {
 		t.Fatalf("terminalized job must not consume a dispatch credit: %d / %v", len(undispatched), err)
 	}
 }
+
+// A job terminalized for outbox exhaustion and then requeued gets a fresh
+// dead-letter budget instead of dying again on the next dispatch pass.
+func TestRequeueDead_ResetsOutboxDeadLetterBudget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
+	s.RedispatchAfter = time.Nanosecond
+	tn, _ := domain.NewTenant("acme", "k")
+	if err := b.Tenants.Create(ctx, tn); err != nil {
+		t.Fatal(err)
+	}
+	job, err := domain.NewJob(tn.ID, "poison", json.RawMessage(`{}`), domain.PriorityDefault, 3, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Jobs.Create(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Jobs.MarkDispatched(ctx, job.ID, job.FencingToken); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < domain.MaxDeadLetteredDispatches; i++ {
+		e := domain.NewOutboxEvent(job.ID, broker.JobsRoutingKey, json.RawMessage(`{}`))
+		e.DeadLettered = true
+		e.RetryCount = domain.MaxOutboxRetries
+		if err := b.Outbox.Store(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RequeueDead(ctx, job.ID); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	if _, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	got, err := b.Jobs.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusPending || got.DispatchedAt == nil {
+		t.Fatalf("requeued job must be dispatched again, got status=%q dispatched_at=%v", got.Status, got.DispatchedAt)
+	}
+}
