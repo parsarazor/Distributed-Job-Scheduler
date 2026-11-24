@@ -96,7 +96,7 @@ schedctl worker revoke -id <credential-id>
 
 `WORKER_ID` must match `^[A-Za-z0-9._-]{1,255}$` (no spaces or colons). `schedctl`, the scheduler and the worker all reject other IDs at startup or on the request.
 
-A worker's own gRPC port (`Execute`, `Heartbeat`, `GetWorkerStatus`, `CancelExecution`, `DrainWorker`) accepts only `ADMIN_TOKEN`. Worker tokens, shared or per-worker, are refused there, so a revoked worker token works nowhere.
+A worker's own gRPC port (`Execute`, `Heartbeat`, `GetWorkerStatus`, `CancelExecution`, `DrainWorker`) accepts only `ADMIN_TOKEN`. Worker tokens, shared or per-worker, are refused there, so a revoked worker token works nowhere. Compose leaves that port's admin RPCs off. If you enable them, set the worker's `ADMIN_TOKEN` to a value different from the schedulers' `ADMIN_TOKEN`, so a compromised worker cannot administer tenants or credentials.
 
 To rotate a token with no downtime, create a second credential for the same worker ID, deploy it, then revoke the old one. Once every worker has its own token, set `SHARED_WORKER_TOKEN=disabled` on the schedulers so the fleet-wide token stops working for scheduler RPCs. The schedulers must still have `WORKER_TOKEN` set, because startup requires it.
 
