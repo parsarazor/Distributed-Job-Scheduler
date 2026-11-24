@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	apiv1 "github.com/parsarazor/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

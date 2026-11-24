@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 )
 
 func (r *JobRepo) GetDependency(ctx context.Context, tenantID, id uuid.UUID, _ bool) (*domain.Job, error) {

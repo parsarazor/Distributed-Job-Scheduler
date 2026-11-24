@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
+	"github.com/parsarazor/distributed-job-scheduler/internal/memory"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

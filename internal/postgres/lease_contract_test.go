@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 )
 
 func createLeaseJob(t *testing.T, r *Repositories, tenantID uuid.UUID) *domain.Job {

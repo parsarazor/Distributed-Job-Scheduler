@@ -75,7 +75,7 @@ EXIT:0
 
 TEST_POSTGRES_DSN=postgres://prsamohamadi@localhost:5432/job_scheduler_test?sslmode=disable \
   INTEGRATION=1 go test -race -count=1 ./internal/postgres/...
-ok  github.com/prsamohamadi/distributed-job-scheduler/internal/postgres  7.914s
+ok  github.com/parsarazor/distributed-job-scheduler/internal/postgres  7.914s
 ```
 
 `TestOwnsJobMetadataFailsClosedWithoutIdentity` fails against the previous

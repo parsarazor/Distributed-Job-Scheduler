@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
+	"github.com/parsarazor/distributed-job-scheduler/internal/memory"
 )
 
 // Env-driven backend selection is load-bearing production logic, so pin its

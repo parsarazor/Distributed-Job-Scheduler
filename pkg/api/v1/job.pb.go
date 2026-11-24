@@ -462,7 +462,7 @@ const file_proto_v1_job_proto_rawDesc = "" +
 	"\x10JOB_PRIORITY_LOW\x10\x01\x12\x18\n" +
 	"\x14JOB_PRIORITY_DEFAULT\x10\x02\x12\x15\n" +
 	"\x11JOB_PRIORITY_HIGH\x10\x03\x12\x19\n" +
-	"\x15JOB_PRIORITY_CRITICAL\x10\x04BAZ?github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
+	"\x15JOB_PRIORITY_CRITICAL\x10\x04B?Z=github.com/parsarazor/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
 
 var (
 	file_proto_v1_job_proto_rawDescOnce sync.Once

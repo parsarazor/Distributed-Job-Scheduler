@@ -3,8 +3,8 @@ package service
 import (
 	"testing"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	apiv1 "github.com/parsarazor/distributed-job-scheduler/pkg/api/v1"
 )
 
 func TestPriorityMapper_ExplicitWeights(t *testing.T) {

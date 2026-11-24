@@ -717,7 +717,7 @@ const file_proto_v1_worker_proto_rawDesc = "" +
 	"\tHeartbeat\x12\x14.v1.HeartbeatRequest\x1a\x15.v1.HeartbeatResponse\x12J\n" +
 	"\x0fGetWorkerStatus\x12\x1a.v1.GetWorkerStatusRequest\x1a\x1b.v1.GetWorkerStatusResponse\x12J\n" +
 	"\x0fCancelExecution\x12\x1a.v1.CancelExecutionRequest\x1a\x1b.v1.CancelExecutionResponse\x12>\n" +
-	"\vDrainWorker\x12\x16.v1.DrainWorkerRequest\x1a\x17.v1.DrainWorkerResponseBAZ?github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
+	"\vDrainWorker\x12\x16.v1.DrainWorkerRequest\x1a\x17.v1.DrainWorkerResponseB?Z=github.com/parsarazor/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
 
 var (
 	file_proto_v1_worker_proto_rawDescOnce sync.Once

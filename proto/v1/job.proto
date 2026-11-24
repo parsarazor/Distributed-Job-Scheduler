@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package v1;
 
-option go_package = "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1";
+option go_package = "github.com/parsarazor/distributed-job-scheduler/pkg/api/v1;v1";
 
 import "google/protobuf/timestamp.proto";
 
