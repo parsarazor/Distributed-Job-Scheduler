@@ -39,3 +39,15 @@ func TestParseDatabaseConfig_EnvironmentOverrides(t *testing.T) {
 		t.Fatalf("timeout overrides ignored: %q", opts)
 	}
 }
+
+// Options already set in DATABASE_URL, such as a custom search_path, survive.
+func TestParseDatabaseConfig_KeepsURLOptions(t *testing.T) {
+	cfg, err := parseDatabaseConfig("postgres://app:custom@localhost/scheduler?sslmode=verify-full&options=-c%20search_path%3Dtenant_jobs", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := cfg.ConnConfig.RuntimeParams["options"]
+	if !strings.HasPrefix(opts, "-c search_path=tenant_jobs ") || !strings.Contains(opts, "statement_timeout=") {
+		t.Fatalf("URL options dropped: %q", opts)
+	}
+}

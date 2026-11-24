@@ -178,9 +178,11 @@ func applyDatabaseDefaults(cfg *pgxpool.Config, lookup func(string) string) {
 		}
 	}
 	// Session-level guards, applied on every new connection.
-	cfg.ConnConfig.RuntimeParams["options"] = fmt.Sprintf(
-		"-c statement_timeout=%d -c idle_in_transaction_session_timeout=%d",
-		statementTimeout.Milliseconds(), idleTxTimeout.Milliseconds())
+	// Keep options from DATABASE_URL (e.g. search_path); later -c flags win.
+	options := strings.TrimSpace(cfg.ConnConfig.RuntimeParams["options"] + fmt.Sprintf(
+		" -c statement_timeout=%d -c idle_in_transaction_session_timeout=%d",
+		statementTimeout.Milliseconds(), idleTxTimeout.Milliseconds()))
+	cfg.ConnConfig.RuntimeParams["options"] = options
 }
 
 func validateRabbitURL(raw string, development bool) error {
