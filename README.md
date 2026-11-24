@@ -94,6 +94,10 @@ schedctl worker list
 schedctl worker revoke -id <credential-id>
 ```
 
+`WORKER_ID` must match `^[A-Za-z0-9._-]{1,255}$` (no spaces or colons). `schedctl`, the scheduler and the worker all reject other IDs at startup or on the request.
+
+A worker's own gRPC port (`Execute`, `Heartbeat`, `GetWorkerStatus`, `CancelExecution`, `DrainWorker`) accepts only `ADMIN_TOKEN`. Worker tokens, shared or per-worker, are refused there, so a revoked worker token works nowhere.
+
 To rotate a token with no downtime, create a second credential for the same worker ID, deploy it, then revoke the old one. Once every worker has its own token, set `SHARED_WORKER_TOKEN=disabled` on the schedulers so the fleet-wide token stops working for scheduler RPCs. The schedulers must still have `WORKER_TOKEN` set, because startup requires it.
 
 ## Scheduler replicas
@@ -119,7 +123,7 @@ Everything is env vars, see `internal/app/app.go`:
 | `SCHEDULER_ADDR` | Worker only; scheduler gRPC address, e.g. `scheduler:50051` | — |
 | `SCHEDULER_CA_FILE`, `SCHEDULER_TLS_SERVER_NAME` | Worker only; CA bundle and server name for scheduler TLS (system roots by default). Plaintext only with `APP_ENV=development` and no CA file | — |
 | `PORT` | gRPC port | 50051 / 50052 |
-| `WORKER_ID` | Shows up in logs + fencing | worker-1 |
+| `WORKER_ID` | Shows up in logs + fencing; letters, digits, `.`, `_`, `-`, at most 255 characters | worker-1 |
 | `MAX_CONCURRENCY` | Worker semaphore size | 10 |
 | `LEASE_TTL` | Database lease duration | 30s |
 | `REAPER_INTERVAL` | Expired-lease scan interval | 10s |

@@ -22,6 +22,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -66,6 +67,9 @@ func run(args []string) error {
 	if args[0] == "worker" {
 		switch args[1] {
 		case "create":
+			if !domain.ValidWorkerID(*workerID) {
+				return fmt.Errorf("-worker-id must match %s", domain.WorkerIDPattern)
+			}
 			resp, err = client.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: *workerID})
 		case "list":
 			resp, err = listAllWorkers(ctx, client)

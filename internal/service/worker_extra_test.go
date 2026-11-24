@@ -305,7 +305,7 @@ func TestGRPC_HeartbeatRenewsOwnedLease(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 	_, wc := dialTestServers(t, s.tenants, s, w)
-	ctx = credCtx(ctx, workerTestKey)
+	ctx = credCtx(ctx, adminTestKey)
 	before, err := s.GetJob(ctx, job.ID)
 	if err != nil {
 		t.Fatal(err)

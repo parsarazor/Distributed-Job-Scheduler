@@ -97,7 +97,12 @@ func TestWorkerCredentials_LegacyTenantKeyWithWorkerPrefix(t *testing.T) {
 		t.Fatalf("tenant key must not act as a worker: %v", err)
 	}
 	admin := dialScheduler(t, s, adminTestKey)
-	if _, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: "edge 1"}); err != nil {
-		t.Fatalf("worker IDs with inner spaces are valid: %v", err)
+	for _, id := range []string{"edge 1", " edge-1", "edge:1", "edge/1", "édge"} {
+		if _, err := admin.CreateWorkerCredential(ctx, &apiv1.CreateWorkerCredentialRequest{WorkerId: id}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("worker ID %q must be rejected: %v", id, err)
+		}
+	}
+	if _, err := dialScheduler(t, s, workerTestKey).RenewJobLease(ctx, &apiv1.RenewJobLeaseRequest{JobId: uuid.NewString(), WorkerId: "edge 1", LeaseTtlMs: 1000}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("worker RPCs must reject malformed worker IDs: %v", err)
 	}
 }

@@ -167,17 +167,25 @@ func TestGRPC_WorkerService(t *testing.T) {
 	if err != nil || st.WorkerId != "grpc-worker" {
 		t.Fatalf("status: %+v %v", st, err)
 	}
-	if _, err := wc.Execute(workerCtx, &apiv1.ExecuteRequest{}); err != nil {
+	// Worker tokens authenticate workers to the scheduler only; a leaked or
+	// revoked one must not drive another worker's port.
+	if _, err := wc.Execute(workerCtx, &apiv1.ExecuteRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("worker token must not call Execute, got %v", err)
+	}
+	if _, err := wc.Heartbeat(workerCtx, &apiv1.HeartbeatRequest{JobId: "nope"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("worker token must not call Heartbeat, got %v", err)
+	}
+	if _, err := wc.Execute(adminCtx, &apiv1.ExecuteRequest{}); err != nil {
 		t.Fatalf("nil-job execute must be a soft reject, got %v", err)
 	}
-	hb, err := wc.Heartbeat(workerCtx, &apiv1.HeartbeatRequest{JobId: "nope"})
+	hb, err := wc.Heartbeat(adminCtx, &apiv1.HeartbeatRequest{JobId: "nope"})
 	if err != nil || !hb.AbortRequested {
 		t.Fatalf("bad heartbeat must request abort, got %+v %v", hb, err)
 	}
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = b.Tenants.Create(ctx, tn)
 	j, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: ctxTime()})
-	ex, err := wc.Execute(workerCtx, &apiv1.ExecuteRequest{Job: DomainJobToProto(j)})
+	ex, err := wc.Execute(adminCtx, &apiv1.ExecuteRequest{Job: DomainJobToProto(j)})
 	if err != nil || !ex.Accepted {
 		t.Fatalf("execute: %+v %v", ex, err)
 	}

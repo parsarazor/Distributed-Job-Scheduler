@@ -11,9 +11,10 @@ import "proto/v1/job.proto";
 // and cancellation control over distributed worker nodes.
 service WorkerService {
   // Execute directly submits or dispatches a job to a worker node for execution.
+  // Admin-only: worker tokens authenticate workers to the scheduler, not to each other.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
 
-  // Heartbeat periodically renews the worker lease and checks if abort was requested.
+  // Heartbeat periodically renews the worker lease and checks if abort was requested. Admin-only.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
   // GetWorkerStatus queries the current capacity, concurrency, and active tasks on the worker.

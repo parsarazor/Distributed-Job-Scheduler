@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
@@ -25,10 +23,6 @@ func (s *Scheduler) SetWorkerCredentials(repo repository.WorkerCredentialReposit
 	s.workerCreds = repo
 }
 
-func validWorkerID(id string) bool {
-	return id != "" && len(id) <= maxWorkerIDLen && strings.TrimSpace(id) == id && !strings.ContainsFunc(id, unicode.IsControl)
-}
-
 func (s *Scheduler) workerCredentials() (repository.WorkerCredentialRepository, error) {
 	if s.workerCreds == nil {
 		return nil, status.Error(codes.Unimplemented, "worker credentials are not configured")
@@ -42,7 +36,7 @@ func (s *Scheduler) CreateWorkerCredential(ctx context.Context, workerID string)
 	if err != nil {
 		return nil, "", err
 	}
-	if !validWorkerID(workerID) {
+	if !domain.ValidWorkerID(workerID) {
 		return nil, "", domain.ErrInvalidInput
 	}
 	token, err := randomToken(workerTokenPrefix)

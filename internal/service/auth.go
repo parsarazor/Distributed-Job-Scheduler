@@ -61,8 +61,8 @@ var methodRoles = map[string]authRole{
 	apiv1.SchedulerService_CreateWorkerCredential_FullMethodName: roleAdmin,
 	apiv1.SchedulerService_ListWorkerCredentials_FullMethodName:  roleAdmin,
 	apiv1.SchedulerService_RevokeWorkerCredential_FullMethodName: roleAdmin,
-	apiv1.WorkerService_Execute_FullMethodName:                   roleWorker,
-	apiv1.WorkerService_Heartbeat_FullMethodName:                 roleWorker,
+	apiv1.WorkerService_Execute_FullMethodName:                   roleAdmin,
+	apiv1.WorkerService_Heartbeat_FullMethodName:                 roleAdmin,
 	apiv1.WorkerService_GetWorkerStatus_FullMethodName:           roleAdmin,
 	apiv1.WorkerService_CancelExecution_FullMethodName:           roleAdmin,
 	apiv1.WorkerService_DrainWorker_FullMethodName:               roleAdmin,
@@ -169,6 +169,9 @@ func workerBound(ctx context.Context, workerID string) error {
 	who, ok := ctx.Value(identityKey{}).(identity)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if !domain.ValidWorkerID(workerID) {
+		return status.Error(codes.InvalidArgument, "worker_id must match "+domain.WorkerIDPattern)
 	}
 	if who.worker != "" && who.worker != workerID {
 		return status.Error(codes.PermissionDenied, "credential is bound to another worker_id")

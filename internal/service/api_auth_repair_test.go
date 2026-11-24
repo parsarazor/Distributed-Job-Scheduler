@@ -41,9 +41,8 @@ func TestAuthenticatorCredentialScopesForEveryRPC(t *testing.T) {
 	}{
 		{"SchedulerService", "tenant-key", []string{"SubmitJob", "GetJob", "ListJobs", "CancelJob", "GetJobEvents", "RequeueDeadJob"}},
 		{"SchedulerService", "worker-key", []string{"ReportJobCompletion"}},
-		{"WorkerService", "worker-key", []string{"Execute", "Heartbeat"}},
 		{"SchedulerService", "admin-key", []string{"Dispatch", "TriggerReconciliation"}},
-		{"WorkerService", "admin-key", []string{"GetWorkerStatus", "CancelExecution", "DrainWorker"}},
+		{"WorkerService", "admin-key", []string{"Execute", "Heartbeat", "GetWorkerStatus", "CancelExecution", "DrainWorker"}},
 	}
 	for _, group := range groups {
 		for _, method := range group.methods {
@@ -97,7 +96,7 @@ func TestAuthenticatorFailsClosedAndRemovesBearerMetadata(t *testing.T) {
 			t.Fatalf("malformed credential status: %v", err)
 		}
 	}
-	ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "Bearer worker-key", "traceparent", "trace-value"))
+	ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "Bearer admin-key", "traceparent", "trace-value"))
 	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer worker-key", "tracestate", "trace-state"))
 	_, err := auth(ctx, nil, &grpc.UnaryServerInfo{FullMethod: apiv1.WorkerService_Heartbeat_FullMethodName}, func(ctx context.Context, _ any) (any, error) {
 		incoming, _ := metadata.FromIncomingContext(ctx)

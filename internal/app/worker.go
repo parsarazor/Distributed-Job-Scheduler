@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
 	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -61,6 +62,13 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	if limits.leaseTTL < time.Millisecond || limits.leaseTTL > service.MaxWorkerLease {
 		return nil, fmt.Errorf("LEASE_TTL must be between 1ms and %s for scheduler-backed workers", service.MaxWorkerLease)
 	}
+	workerID := os.Getenv("WORKER_ID")
+	if workerID == "" {
+		workerID = "worker-1"
+	}
+	if !domain.ValidWorkerID(workerID) {
+		return nil, fmt.Errorf("WORKER_ID %q must match %s", workerID, domain.WorkerIDPattern)
+	}
 	transport, secure, err := schedulerTransport(cfg.development)
 	if err != nil {
 		return nil, err
@@ -82,10 +90,6 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 		}
 	}
 	cleanups = append(cleanups, func() { _ = conn.Close() })
-	workerID := os.Getenv("WORKER_ID")
-	if workerID == "" {
-		workerID = "worker-1"
-	}
 	health := healthpb.NewHealthClient(conn)
 	scheduler := apiv1.NewSchedulerServiceClient(conn)
 	schedulerReady := func(ctx context.Context) error {

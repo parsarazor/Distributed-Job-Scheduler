@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/postgres"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
@@ -140,6 +141,10 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	workerID := os.Getenv("WORKER_ID")
 	if workerID == "" {
 		workerID = "worker-1"
+	}
+	if !domain.ValidWorkerID(workerID) {
+		cleanup()
+		return nil, fmt.Errorf("WORKER_ID %q must match %s", workerID, domain.WorkerIDPattern)
 	}
 	worker := service.NewWorker(workerID, sched, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)

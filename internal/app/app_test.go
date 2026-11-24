@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +161,28 @@ func TestNewWorkerFromEnv_RequiresSchedulerAndRejectsDatabase(t *testing.T) {
 			if deps, err := NewWorkerFromEnv(context.Background()); err == nil {
 				deps.Cleanup()
 				t.Fatal("worker started without the scheduler-only boundary")
+			}
+		})
+	}
+}
+
+func TestWorkerIDMustBeAStrictIdentifier(t *testing.T) {
+	for _, id := range []string{"edge 1", "edge\t1", "edge:1", "édge"} {
+		t.Run(id, func(t *testing.T) {
+			t.Setenv("APP_ENV", "development")
+			t.Setenv("STORAGE", "memory")
+			t.Setenv("DATABASE_URL", "")
+			t.Setenv("RABBITMQ_URL", "")
+			t.Setenv("WORKER_ID", id)
+			if _, err := NewFromEnv(context.Background()); err == nil || !strings.Contains(err.Error(), "WORKER_ID") {
+				t.Fatalf("scheduler accepted WORKER_ID %q: %v", id, err)
+			}
+			t.Setenv("STORAGE", "")
+			t.Setenv("WORKER_TOKEN", "local-development-worker-token-change-me")
+			t.Setenv("SCHEDULER_ADDR", "scheduler:50051")
+			t.Setenv("RABBITMQ_URL", "amqp://u:p@q/")
+			if _, err := NewWorkerFromEnv(context.Background()); err == nil || !strings.Contains(err.Error(), "WORKER_ID") {
+				t.Fatalf("worker accepted WORKER_ID %q: %v", id, err)
 			}
 		})
 	}
