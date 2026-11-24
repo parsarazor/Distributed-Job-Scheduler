@@ -878,3 +878,56 @@ func TestLive_RequeueDeadResetsOutboxDeadLetterBudget(t *testing.T) {
 		t.Fatalf("new dead letters after requeue must still count: ids=%v err=%v", ids, err)
 	}
 }
+
+type liveUnroutableBroker struct{}
+
+func (liveUnroutableBroker) Publish(context.Context, string, []byte, string) error {
+	return fmt.Errorf("%w: 312 NO_ROUTE", broker.ErrUnroutable)
+}
+func (liveUnroutableBroker) Close() error { return nil }
+
+func TestLive_NoWorkerDefersThenDies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, liveUnroutableBroker{}, nil)
+	s.ReconcileThreshold = 0
+	s.NoWorkerRetry = 200 * time.Millisecond
+	job, err := s.SubmitJob(ctx, service.SubmitInput{TenantID: tn.ID, Name: "no-such-worker", Payload: json.RawMessage(`{}`), MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := func() {
+		t.Helper()
+		if _, err := s.DispatchReady(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ReconcileOutbox(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cycle()
+	deferred := liveGetJob(t, ctx, r, job.ID)
+	if deferred.Status != domain.StatusPending || deferred.DispatchedAt != nil || deferred.NextRetryAt == nil {
+		t.Fatalf("unroutable job not deferred: %+v", deferred)
+	}
+	for id, row := range liveOutboxRows(t, ctx, p, job.ID) {
+		if !row.Published || row.DeadLettered || row.RetryCount != 0 {
+			t.Fatalf("unroutable row %s used retry budget: %+v", id, row)
+		}
+	}
+	if n, _ := s.DispatchReady(ctx, 10); n != 0 {
+		t.Fatal("deferred job dispatched before NoWorkerRetry")
+	}
+	time.Sleep(300 * time.Millisecond)
+	s.NoWorkerTimeout = time.Millisecond
+	cycle()
+	if dead := liveGetJob(t, ctx, r, job.ID); dead.Status != domain.StatusDead || dead.DispatchedAt != nil {
+		t.Fatalf("job not dead after NoWorkerTimeout: %+v", dead)
+	}
+	if rows := liveOutboxRows(t, ctx, p, job.ID); len(rows) != 2 {
+		t.Fatalf("outbox rows = %d, want 2 settled announcements", len(rows))
+	}
+}

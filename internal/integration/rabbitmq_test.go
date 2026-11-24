@@ -62,12 +62,30 @@ func rabbitCase(t *testing.T, server *testinfra.RabbitMQ) (*broker.RabbitMQBroke
 
 func awaitQueue(t *testing.T, ch *amqp.Channel, description string, ready func(amqp.Queue) bool) amqp.Queue {
 	t.Helper()
+	return awaitNamedQueue(t, ch, broker.JobsQueue, description, ready)
+}
+
+// declareJobQueues declares the job-name queues a worker for names would
+// declare, so the scheduler's announcements for them are routable.
+func declareJobQueues(t *testing.T, ch *amqp.Channel, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		q := broker.JobQueue(name)
+		if _, err := ch.QueueDeclare(q, true, false, false, false, broker.QueueArgs(q)); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = ch.QueueDelete(q, false, false, false) })
+	}
+}
+
+func awaitNamedQueue(t *testing.T, ch *amqp.Channel, queue, description string, ready func(amqp.Queue) bool) amqp.Queue {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		q, err := ch.QueueDeclarePassive(broker.JobsQueue, true, false, false, false, nil)
+		q, err := ch.QueueDeclarePassive(queue, true, false, false, false, nil)
 		if err != nil {
 			t.Fatalf("inspect jobs queue: %v", err)
 		}
@@ -87,12 +105,20 @@ type consumerRun struct {
 	op     *operation
 }
 
-func startConsumer(t *testing.T, b *broker.RabbitMQBroker, prefetch int, handler func(context.Context, []byte) error) *consumerRun {
+// startConsumer consumes the shared queue plus the queues of jobNames.
+func startConsumer(t *testing.T, b *broker.RabbitMQBroker, prefetch int, handler func(context.Context, []byte) error, jobNames ...string) *consumerRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	run := &consumerRun{cancel: cancel}
+	queues := []string{broker.JobsQueue}
+	for _, name := range jobNames {
+		queues = append(queues, broker.JobQueue(name))
+	}
 	run.op = launchOperation(func() (int, error) {
-		return 0, b.Consume(ctx, broker.JobsQueue, broker.JobsRoutingKey, prefetch, handler)
+		if len(queues) == 1 {
+			return 0, b.Consume(ctx, broker.JobsQueue, broker.JobsRoutingKey, prefetch, handler)
+		}
+		return 0, b.ConsumeQueues(ctx, queues, prefetch, handler)
 	})
 	t.Cleanup(func() { run.stop(t) })
 	return run

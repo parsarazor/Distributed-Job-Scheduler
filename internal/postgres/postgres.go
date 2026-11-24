@@ -843,6 +843,13 @@ func (r *OutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, lastErr strin
 	return err
 }
 
+func (r *OutboxRepo) MarkUnroutable(ctx context.Context, id uuid.UUID, reason string) error {
+	_, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE job_outbox SET published=TRUE, published_at=clock_timestamp(),
+		delivered_at=clock_timestamp(), publishing_since=NULL, next_publish_at=NULL, last_error=$2
+		WHERE id=$1 AND NOT published`, id, reason)
+	return err
+}
+
 func (r *OutboxRepo) MarkDelivered(ctx context.Context, id uuid.UUID) error {
 	_, err := dbFromCtx(ctx, r.db).Exec(ctx, `UPDATE job_outbox SET delivered_at=clock_timestamp() WHERE id=$1 AND delivered_at IS NULL`, id)
 	return err

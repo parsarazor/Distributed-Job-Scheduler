@@ -175,3 +175,33 @@ func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDead
 	}
 	return ids, nil
 }
+
+// DeferUnroutable mirrors the PostgreSQL query.
+func (r *JobRepo) DeferUnroutable(ctx context.Context, id uuid.UUID, token int64, retryAfter, maxWait time.Duration) (bool, error) {
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	j := s.jobs[id]
+	if j == nil || j.FencingToken != token || j.Status != domain.StatusPending || j.DispatchedAt == nil {
+		return false, domain.ErrJobNotClaimable
+	}
+	now := time.Now().UTC()
+	readySince := j.ScheduledAt
+	for _, e := range s.events[id] {
+		if e.ToStatus == domain.StatusPending && e.OccurredAt.After(readySince) {
+			readySince = e.OccurredAt
+		}
+	}
+	j.DispatchedAt = nil
+	j.FencingToken++
+	j.UpdatedAt = now
+	if !readySince.After(now.Add(-maxWait)) {
+		j.Status, j.NextRetryAt = domain.StatusDead, nil
+		return true, nil
+	}
+	next := now.Add(retryAfter)
+	j.NextRetryAt = &next
+	return false, nil
+}

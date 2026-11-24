@@ -65,11 +65,22 @@ func TestSDKWorker_RunsJobsThroughSchedulerAndRabbitMQ(t *testing.T) {
 	w.HandleFunc("charge", func(context.Context, *worker.Job) error {
 		return worker.Permanent(errors.New("card declined"))
 	})
+	// A second worker handles only "report": routing must never hand it to w,
+	// which would dead-letter it as an unregistered handler.
+	reports, err := worker.New(worker.Config{
+		SchedulerAddr: "passthrough:///" + lis.Addr().String(), RabbitMQURL: server.URL,
+		WorkerID: "sdk-reports", Token: workerToken, Insecure: true, LeaseTTL: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reports.HandleFunc("report", func(context.Context, *worker.Job) error { return nil })
 	runCtx, stop := context.WithCancel(ctx)
-	done := make(chan error, 1)
+	done := make(chan error, 2)
 	go func() { done <- w.Run(runCtx) }()
+	go func() { done <- reports.Run(runCtx) }()
 	deadline := time.Now().Add(30 * time.Second)
-	for !w.Ready() {
+	for !w.Ready() || !reports.Ready() {
 		if time.Now().After(deadline) {
 			t.Fatal("worker never became ready")
 		}
@@ -88,6 +99,11 @@ func TestSDKWorker_RunsJobsThroughSchedulerAndRabbitMQ(t *testing.T) {
 		return job.ID
 	}
 	invoice, charge := submit("invoice", `{"ID":42}`), submit("charge", `{}`)
+	var reportIDs []uuid.UUID
+	for range 5 {
+		reportIDs = append(reportIDs, submit("report", `{}`))
+	}
+	orphan := submit("no-such-handler", `{}`)
 	if _, err := s.DispatchReady(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
@@ -123,14 +139,24 @@ func TestSDKWorker_RunsJobsThroughSchedulerAndRabbitMQ(t *testing.T) {
 	if job := awaitStatus(charge, domain.StatusDead); job.AttemptCount != 1 {
 		t.Fatalf("permanent failure used %d attempts", job.AttemptCount)
 	}
-	stop()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("clean drain must return nil: %v", err)
+	for _, id := range reportIDs {
+		if job := awaitStatus(id, domain.StatusSucceeded); job.LastLeaseOwner == nil || *job.LastLeaseOwner != "sdk-reports" {
+			t.Fatalf("report %s ran on %v, want sdk-reports", id, job.LastLeaseOwner)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Run did not return after cancellation")
+	}
+	if job, err := s.GetJob(ctx, orphan); err != nil || job.Status != domain.StatusPending || job.DispatchedAt != nil || job.NextRetryAt == nil {
+		t.Fatalf("job with no worker must wait undispatched: %+v %v", job, err)
+	}
+	stop()
+	for range 2 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("clean drain must return nil: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("Run did not return after cancellation")
+		}
 	}
 	if w.Ready() {
 		t.Fatal("stopped worker reports ready")

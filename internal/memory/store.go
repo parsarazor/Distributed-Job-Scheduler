@@ -518,7 +518,7 @@ func (r *JobRepo) GetUndispatchedJobsForUpdate(ctx context.Context, limit int) (
 			group := groups[tenant]
 			if round < len(group) && len(result) < limit {
 				job := group[round]
-				result = append(result, &domain.Job{ID: job.ID, AttemptCount: job.AttemptCount,
+				result = append(result, &domain.Job{ID: job.ID, Name: job.Name, AttemptCount: job.AttemptCount,
 					FencingToken: job.FencingToken, TraceParent: job.TraceParent, TraceState: job.TraceState})
 				added = true
 			}
@@ -1085,6 +1085,23 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
 	e.MarkPublished()
 	e.PublishingSince = nil
 	e.NextPublishAt = nil
+	return nil
+}
+
+func (r *OutboxRepo) MarkUnroutable(ctx context.Context, id uuid.UUID, reason string) error {
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	e, ok := s.outbox[id]
+	if !ok || e.Published {
+		return nil
+	}
+	e.MarkPublished()
+	e.DeliveredAt = e.PublishedAt
+	e.PublishingSince, e.NextPublishAt = nil, nil
+	e.LastError = &reason
 	return nil
 }
 

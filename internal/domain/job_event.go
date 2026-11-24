@@ -19,6 +19,10 @@ func SafeHandlerMessages() []string {
 // reason is this instead of consuming its retry budget.
 const ReasonHandlerNotRegistered = "handler not registered"
 
+// ReasonNoWorker explains a job that stayed unroutable because no worker
+// declared a queue for its job name within the scheduler's no-worker timeout.
+const ReasonNoWorker = "no worker for job name"
+
 // ReasonPermanentFailure records a handler failure the worker reported as non-retryable.
 const ReasonPermanentFailure = "handler failed permanently"
 

@@ -33,17 +33,18 @@ func TestDurableSchedulerWorkerPipeline(t *testing.T) {
 		t.Fatalf("only the parent is ready: n=%d err=%v", n, err)
 	}
 	rows := unpublished(t, f)
-	if len(rows) != 1 || rows[0].JobID != parent.ID || rows[0].RoutingKey != broker.JobsRoutingKey {
+	if len(rows) != 1 || rows[0].JobID != parent.ID || rows[0].RoutingKey != broker.JobQueue(parent.Name) {
 		t.Fatalf("dispatch must stage only the parent's canonical announcement: %+v", rows)
 	}
 	parentAnnouncement := rows[0]
+	declareJobQueues(t, ch, parent.Name, child.Name)
 	if n, err := f.sched.ReconcileOutbox(f.ctx, 100); err != nil || n != 1 {
 		t.Fatalf("publish parent outbox: n=%d err=%v", n, err)
 	}
 	if len(unpublished(t, f)) != 0 {
 		t.Fatal("confirmed parent outbox row must be marked published")
 	}
-	awaitQueue(t, ch, "parent announcement persisted before worker startup", func(q amqp.Queue) bool { return q.Messages == 1 && q.Consumers == 0 })
+	awaitNamedQueue(t, ch, broker.JobQueue(parent.Name), "parent announcement persisted before worker startup", func(q amqp.Queue) bool { return q.Messages == 1 && q.Consumers == 0 })
 
 	worker := service.NewWorker("integration-worker", f.sched, 2, 10*time.Second)
 	var parentRuns, childRuns atomic.Int32
@@ -87,7 +88,7 @@ func TestDurableSchedulerWorkerPipeline(t *testing.T) {
 			return fmt.Errorf("unexpected extra job delivery")
 		}
 		return err
-	})
+	}, parent.Name, child.Name)
 	assertCompletion := func(id uuid.UUID) {
 		t.Helper()
 		got := receive(t, completed)
@@ -107,11 +108,11 @@ func TestDurableSchedulerWorkerPipeline(t *testing.T) {
 		t.Fatalf("publish child outbox: n=%d err=%v", n, err)
 	}
 	assertCompletion(child.ID)
-	if err := b.Publish(f.ctx, broker.JobsRoutingKey, parentAnnouncement.Payload, parentAnnouncement.ID.String()); err != nil {
+	if err := b.Publish(f.ctx, broker.JobQueue(parent.Name), parentAnnouncement.Payload, parentAnnouncement.ID.String()); err != nil {
 		t.Fatal(err)
 	}
 	assertCompletion(parent.ID)
-	awaitQueue(t, ch, "all job announcements consumed", func(q amqp.Queue) bool { return q.Messages == 0 })
+	awaitNamedQueue(t, ch, broker.JobQueue(parent.Name), "all job announcements consumed", func(q amqp.Queue) bool { return q.Messages == 0 })
 	run.stop(t)
 	if err := worker.Wait(f.ctx); err != nil {
 		t.Fatalf("drain worker: %v", err)

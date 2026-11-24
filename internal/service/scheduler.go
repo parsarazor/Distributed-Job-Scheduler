@@ -38,6 +38,12 @@ type Scheduler struct {
 	// RedispatchAfter controls how long a confirmed announcement may wait for a claim.
 	// Zero uses the default, five minutes.
 	RedispatchAfter time.Duration
+	// NoWorkerRetry is how long a job whose job name has no worker queue waits
+	// before it is dispatched again (default 1m).
+	NoWorkerRetry time.Duration
+	// NoWorkerTimeout is how long such a job may stay ready before it goes dead
+	// with ReasonNoWorker (default 24h).
+	NoWorkerTimeout time.Duration
 	TenantQuota     int
 	TenantRate      int
 
@@ -504,7 +510,7 @@ func (s *Scheduler) DispatchReady(ctx context.Context, batchSize int) (int, erro
 			if err != nil {
 				return err
 			}
-			event := domain.NewOutboxEvent(j.ID, broker.JobsRoutingKey, payload)
+			event := domain.NewOutboxEvent(j.ID, broker.JobQueue(j.Name), payload)
 			event.ID = domain.DispatchID(j.ID, j.AttemptCount, j.FencingToken)
 			event.CreatedAt = now
 			if err := s.outbox.Store(ctx, event); err != nil {
@@ -640,6 +646,9 @@ func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error)
 		// 3. Persist the outcome in a second short transaction.
 		outcomeCtx, stopOutcome := context.WithTimeout(ctx, 4*time.Second)
 		outcomeErr := s.tx.WithinTransaction(outcomeCtx, func(txCtx context.Context) error {
+			if errors.Is(pubErr, broker.ErrUnroutable) && broker.IsJobTypeQueue(event.RoutingKey) {
+				return s.deferUnroutable(txCtx, event)
+			}
 			if pubErr != nil {
 				telemetry.OutboxPublishFailures.Inc()
 				if event.RetryCount+1 >= domain.MaxOutboxRetries {
@@ -666,6 +675,52 @@ func (s *Scheduler) ReconcileOutbox(ctx context.Context, limit int) (int, error)
 		}
 	}
 	return n, passErr
+}
+
+// Defaults for jobs whose job name has no worker queue.
+const (
+	DefaultNoWorkerRetry   = time.Minute
+	DefaultNoWorkerTimeout = 24 * time.Hour
+)
+
+// deferUnroutable handles an announcement refused because no worker has
+// declared a queue for the job name. It holds the job without using publish
+// retry budget, and makes it dead once NoWorkerTimeout has passed.
+func (s *Scheduler) deferUnroutable(ctx context.Context, event *domain.OutboxEvent) error {
+	var announcement struct {
+		FencingToken int64 `json:"fencing_token"`
+	}
+	if err := json.Unmarshal(event.Payload, &announcement); err != nil {
+		return fmt.Errorf("decode announcement %s: %w", event.ID, err)
+	}
+	if err := s.outbox.MarkUnroutable(ctx, event.ID, domain.ReasonNoWorker); err != nil {
+		return err
+	}
+	retry, timeout := s.NoWorkerRetry, s.NoWorkerTimeout
+	if retry <= 0 {
+		retry = DefaultNoWorkerRetry
+	}
+	if timeout <= 0 {
+		timeout = DefaultNoWorkerTimeout
+	}
+	dead, err := s.jobs.DeferUnroutable(ctx, event.JobID, announcement.FencingToken, retry, timeout)
+	if errors.Is(err, domain.ErrJobNotClaimable) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !dead {
+		telemetry.NoWorkerDeferrals.Inc()
+		slog.Debug("no worker queue for job name; job deferred", "job_id", event.JobID, "queue", event.RoutingKey, "retry_in", retry)
+		return nil
+	}
+	telemetry.NoWorkerDeadJobs.Inc()
+	slog.Error("job dead: no worker handles its job name", "job_id", event.JobID, "queue", event.RoutingKey, "timeout", timeout)
+	if err := s.recordTransition(ctx, event.JobID, domain.StatusPending, domain.StatusDead, "", domain.ReasonNoWorker); err != nil {
+		return err
+	}
+	return s.cancelDependents(ctx, event.JobID, "parent terminal failure")
 }
 
 func (s *Scheduler) cancelDependents(ctx context.Context, parentID uuid.UUID, reason string) error {
