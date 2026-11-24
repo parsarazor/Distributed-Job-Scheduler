@@ -10,7 +10,7 @@ func TestJobQueue(t *testing.T) {
 		t.Fatalf("plain name: %q", q)
 	}
 	long := strings.Repeat("x", 255)
-	for _, name := range []string{long, "quarantine", "h.abc"} {
+	for _, name := range []string{long, "quarantine", "h.abc", "two\nlines", "with space", "émail", "tab\t"} {
 		q := JobQueue(name)
 		if !strings.HasPrefix(q, JobQueuePrefix+"h.") || len(q) > maxQueueName || !IsJobTypeQueue(q) || q == JobsQuarantineQueue {
 			t.Fatalf("%q mapped to %q", name, q)
