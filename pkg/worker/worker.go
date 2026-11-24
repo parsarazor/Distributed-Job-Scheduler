@@ -254,6 +254,9 @@ func (w *Worker) shutdown(rb *broker.RabbitMQBroker, intakeDone <-chan error, in
 	select {
 	case <-closed:
 	case <-time.After(time.Second):
+		// A handler ignored cancellation and Close is waiting for it; drop the
+		// connection so its delivery is redelivered and nothing stays open.
+		rb.Abort()
 	}
 	return result
 }

@@ -535,6 +535,20 @@ func invokeMessageHandler(ctx context.Context, handler func(context.Context, []b
 	return handler(ctx, payload)
 }
 
+// Abort stops intake and closes the consumer connection without waiting for
+// handlers, for a shutdown whose handlers ignore cancellation. Unsettled
+// deliveries are redelivered. It does not release the publisher; use Close.
+func (r *RabbitMQBroker) Abort() {
+	r.mu.Lock()
+	r.closed = true
+	r.cancel()
+	s := r.subscription
+	r.mu.Unlock()
+	if s != nil {
+		s.conn.Close()
+	}
+}
+
 // Close is terminal and idempotent. It interrupts publications and reconnect
 // attempts, stops consumers, and waits for their active handlers to drain.
 // Like Consume, it requires handlers to return; it must not be called by a handler.
