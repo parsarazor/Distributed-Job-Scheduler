@@ -36,6 +36,10 @@ func TestLive_CompleteLeaseOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// A lease claimed before migration 22 has no last_lease_owner.
+			if _, err := p.pool.Exec(ctx, `UPDATE jobs SET last_lease_owner=NULL WHERE id=$1`, job.ID); err != nil {
+				t.Fatal(err)
+			}
 			before, err := r.Jobs.GetByID(ctx, job.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -64,6 +68,9 @@ func TestLive_CompleteLeaseOwnership(t *testing.T) {
 			}
 			if completed.Status != final || completed.AttemptCount != wantAttempts || completed.FencingToken != token || completed.LeaseOwner != nil || completed.LeaseExpiresAt != nil {
 				t.Fatalf("completion must atomically clear the lease and count failures once: %+v", completed)
+			}
+			if completed.LastLeaseOwner == nil || *completed.LastLeaseOwner != "owner" {
+				t.Fatalf("completion must record who held the lease: %v", completed.LastLeaseOwner)
 			}
 			if _, err := r.Jobs.CompleteLease(ctx, job.ID, "owner", token, final); !errors.Is(err, domain.ErrInvalidTransition) {
 				t.Fatalf("repeated completion must be rejected: %v", err)

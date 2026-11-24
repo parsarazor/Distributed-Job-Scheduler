@@ -553,7 +553,7 @@ func (r *JobRepo) CompleteLease(ctx context.Context, id uuid.UUID, workerID stri
 	}
 	j, err := scanJob(dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE jobs SET status=$4::text,
 		attempt_count=attempt_count+CASE WHEN $4::text='failed' THEN 1 ELSE 0 END,
-		lease_owner=NULL, lease_expires_at=NULL
+		last_lease_owner=lease_owner, lease_owner=NULL, lease_expires_at=NULL
 		WHERE id=$1 AND status='running' AND lease_owner=$2 AND fencing_token=$3
 		AND lease_expires_at > clock_timestamp() RETURNING `+jobColumns, id, workerID, token, string(final)))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -603,7 +603,7 @@ func (r *JobRepo) ExpireLease(ctx context.Context, id uuid.UUID, token int64) (*
 	}
 	j, err := scanJob(dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE jobs
 		SET status='failed', fencing_token=fencing_token+1, attempt_count=attempt_count+1,
-		lease_owner=NULL, lease_expires_at=NULL
+		last_lease_owner=COALESCE(lease_owner, last_lease_owner), lease_owner=NULL, lease_expires_at=NULL
 		WHERE id=$1 AND status='running' AND fencing_token=$2 AND lease_expires_at <= clock_timestamp()
 		RETURNING `+jobColumns, id, token))
 	if errors.Is(err, pgx.ErrNoRows) {
