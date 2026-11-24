@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -539,4 +540,59 @@ func publishAfterRestart(t *testing.T, b *broker.RabbitMQBroker, body []byte) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// Several job-name queues on one worker share one prefetch window: RabbitMQ
+// must not hand a busy worker prefetch deliveries per queue.
+func TestRabbitMQ_ConsumeQueuesSharesPrefetch(t *testing.T) {
+	server := testinfra.StartRabbitMQ(t)
+	b, ch := rabbitCase(t, server)
+	names := []string{"prefetch-a", "prefetch-b", "prefetch-c"}
+	queues := make([]string, len(names))
+	for i, n := range names {
+		queues[i] = broker.JobQueue(n)
+	}
+	declareJobQueues(t, ch, names...)
+	const prefetch, perQueue = 2, 5
+	release := make(chan struct{})
+	var started atomic.Int32
+	run := startConsumer(t, b, prefetch, func(ctx context.Context, _ []byte) error {
+		started.Add(1)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil
+	}, names...)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // runs before the consumer's cleanup, even after a failure
+	for _, q := range queues {
+		awaitNamedQueue(t, ch, q, "consumer subscribed", func(q amqp.Queue) bool { return q.Consumers == 1 })
+	}
+	for _, q := range queues {
+		for i := range perQueue {
+			if err := b.Publish(t.Context(), q, []byte(`{}`), fmt.Sprintf("%s-%d", q, i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for started.Load() < prefetch && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond) // let RabbitMQ push anything a per-queue limit would allow
+	ready := 0
+	for _, q := range queues {
+		state, err := ch.QueueDeclarePassive(q, true, false, false, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready += state.Messages
+	}
+	if want := len(queues)*perQueue - prefetch; ready != want || started.Load() != prefetch {
+		t.Fatalf("worker holds %d deliveries (%d handlers), want at most prefetch=%d in total", len(queues)*perQueue-ready, started.Load(), prefetch)
+	}
+	unblock()
+	run.stop(t)
 }

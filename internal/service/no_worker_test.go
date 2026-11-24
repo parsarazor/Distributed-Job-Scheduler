@@ -113,3 +113,43 @@ func TestNoWorker_TimeoutStartsAtFirstRefusal(t *testing.T) {
 		t.Fatalf("first refusal must defer, not kill: %+v", got)
 	}
 }
+
+// Refusals from before an operator requeue must not count, or a requeued job
+// would die again on its first refusal.
+func TestNoWorker_RequeueRestartsTheWait(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, &unroutableBroker{}, nil)
+	s.ReconcileThreshold = 0
+	s.NoWorkerRetry = 10 * time.Millisecond
+	s.NoWorkerTimeout = 200 * time.Millisecond
+	tn, _ := domain.NewTenant("acme", "k")
+	_ = b.Tenants.Create(ctx, tn)
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "orphan", Payload: json.RawMessage(`{}`), MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := func() {
+		t.Helper()
+		if _, err := s.DispatchReady(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ReconcileOutbox(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cycle()
+	time.Sleep(250 * time.Millisecond)
+	cycle()
+	if got, _ := b.Jobs.GetByID(ctx, job.ID); got.Status != domain.StatusDead {
+		t.Fatalf("job not dead after NoWorkerTimeout: %s", got.Status)
+	}
+	if _, err := s.RequeueDead(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	cycle()
+	if got, _ := b.Jobs.GetByID(ctx, job.ID); got.Status != domain.StatusPending || got.NextRetryAt == nil {
+		t.Fatalf("requeued job died on its first refusal: %+v", got)
+	}
+}

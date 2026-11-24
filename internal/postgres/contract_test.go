@@ -933,3 +933,41 @@ func TestLive_NoWorkerDefersThenDies(t *testing.T) {
 		t.Fatalf("outbox rows = %d, want 2 settled announcements", len(rows))
 	}
 }
+
+func TestLive_NoWorkerRequeueRestartsTheWait(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p := openTestPool(t)
+	r := NewRepositories(p)
+	tn := liveTenant(t, r)
+	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, liveUnroutableBroker{}, nil)
+	s.ReconcileThreshold = 0
+	s.NoWorkerRetry = 10 * time.Millisecond
+	s.NoWorkerTimeout = 500 * time.Millisecond
+	job, err := s.SubmitJob(ctx, service.SubmitInput{TenantID: tn.ID, Name: "orphan", Payload: json.RawMessage(`{}`), MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := func() {
+		t.Helper()
+		if _, err := s.DispatchReady(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ReconcileOutbox(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cycle()
+	time.Sleep(600 * time.Millisecond)
+	cycle()
+	if got := liveGetJob(t, ctx, r, job.ID); got.Status != domain.StatusDead {
+		t.Fatalf("job not dead after NoWorkerTimeout: %s", got.Status)
+	}
+	if _, err := s.RequeueDead(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	cycle()
+	if got := liveGetJob(t, ctx, r, job.ID); got.Status != domain.StatusPending || got.NextRetryAt == nil {
+		t.Fatalf("requeued job died on its first refusal: %+v", got)
+	}
+}
