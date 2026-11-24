@@ -82,6 +82,8 @@ services:
       STORAGE: postgres
       APP_ENV: development
       WORKER_TOKEN: local-development-worker-token-change-me
+      # The worker's own port (Execute, Heartbeat, status, drain, cancel) is admin-only.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       SCHEDULER_ADDR: scheduler:50051
       RABBITMQ_URL: amqp://scheduler:scheduler@rabbitmq:5672/
       WORKER_ID: worker-1
