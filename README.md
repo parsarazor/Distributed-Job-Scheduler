@@ -103,7 +103,7 @@ err = w.Run(ctx) // nil after a clean drain when ctx is cancelled
 - **Results:** `nil` succeeds. `worker.Permanent(err)` dead-letters at once. Any other error, or a panic (its stack trace goes to `Config.Logger`), is retried with backoff until `MaxAttempts`.
 - **Cancellation:** the handler's `ctx` ends on timeout, lease loss, an operator `CancelExecution`, or when `ShutdownTimeout` runs out. `context.Cause(ctx)` is `context.DeadlineExceeded`, `worker.ErrLeaseLost`, `worker.ErrCanceled` or `worker.ErrShutdown`.
 - **Run:** returns `nil` after a clean drain, or an error on startup failure, unexpected intake loss, or when `ShutdownTimeout` expires with handlers still running. `Ready()` backs readiness probes.
-- **Transport:** `Config.TLS` secures gRPC to the scheduler (system roots when nil). RabbitMQ TLS comes from the `amqps://` URL. Plaintext gRPC and `amqp://` need `Insecure: true`, which `ConfigFromEnv` sets only for `APP_ENV=development` without `SCHEDULER_CA_FILE`.
+- **Transport:** `Config.TLS` secures gRPC to the scheduler (system roots when nil). RabbitMQ TLS comes from the `amqps://` URL. `Insecure: true` (set by `ConfigFromEnv` for `APP_ENV=development`) allows `amqp://` and development credentials, and plaintext gRPC only when `TLS` is nil, so a configured `TLS` (e.g. from `SCHEDULER_CA_FILE`) is never downgraded.
 - **Boundary:** the SDK has no database driver or storage code; a test enforces this with `go list -deps`.
 - **Example:** [`examples/sendemail`](examples/sendemail) is the `send-email` handler `cmd/worker` registers in development.
 

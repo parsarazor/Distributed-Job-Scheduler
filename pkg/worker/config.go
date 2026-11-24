@@ -42,10 +42,11 @@ type Config struct {
 	// shared WORKER_TOKEN while that is still enabled.
 	Token string
 	// TLS secures the gRPC connection to the scheduler only. Nil selects the
-	// system roots with TLS 1.2 or later.
+	// system roots with TLS 1.2 or later, unless Insecure is set.
 	TLS *tls.Config
-	// Insecure allows plaintext gRPC and amqp:// for local development and
-	// skips production credential checks. It cannot be combined with TLS.
+	// Insecure is for local development: it allows amqp:// and development
+	// credentials, and plaintext gRPC when TLS is nil. A non-nil TLS is
+	// always used, so setting TLS never falls back to plaintext.
 	Insecure bool
 	// Concurrency bounds handlers running at once (default 10, max 65535).
 	Concurrency int
@@ -99,9 +100,6 @@ func (c Config) validate() error {
 	if c.Token == "" || strings.ContainsFunc(c.Token, func(r rune) bool { return r < '!' || r > '~' }) {
 		return errors.New("worker: Token is required and must be visible ASCII")
 	}
-	if c.Insecure && c.TLS != nil {
-		return errors.New("worker: Insecure cannot be combined with TLS")
-	}
 	if !c.Insecure && !domain.ValidProductionToken(c.Token) {
 		return errors.New("worker: Token must contain at least 32 visible ASCII characters unless Insecure is set")
 	}
@@ -125,7 +123,7 @@ func (c Config) validate() error {
 //	SCHEDULER_ADDR, RABBITMQ_URL, WORKER_TOKEN   required
 //	WORKER_ID                                    default worker-1
 //	SCHEDULER_CA_FILE, SCHEDULER_TLS_SERVER_NAME gRPC TLS roots and server name
-//	APP_ENV=development                          Insecure, unless SCHEDULER_CA_FILE is set
+//	APP_ENV=development                          Insecure; plaintext gRPC unless SCHEDULER_CA_FILE is set
 //	MAX_CONCURRENCY, LEASE_TTL, JOB_TIMEOUT, COMPLETION_RETRY_WINDOW, SHUTDOWN_TIMEOUT
 //
 // It refuses DATABASE_URL: job state belongs to the scheduler.
@@ -158,9 +156,8 @@ func ConfigFromEnv() (Config, error) {
 		return cfg, fmt.Errorf("WORKER_ID %q must match %s", cfg.WorkerID, domain.WorkerIDPattern)
 	}
 	caFile := os.Getenv("SCHEDULER_CA_FILE")
-	if development && caFile == "" {
-		cfg.Insecure = true
-	} else {
+	cfg.Insecure = development
+	if !development || caFile != "" {
 		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: os.Getenv("SCHEDULER_TLS_SERVER_NAME")}
 		if caFile != "" {
 			pem, err := os.ReadFile(caFile)

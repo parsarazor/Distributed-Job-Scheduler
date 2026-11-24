@@ -39,7 +39,6 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		"short production token": func(c *Config) { c.Token = "short" },
 		"plaintext broker":       func(c *Config) { c.RabbitMQURL = "amqp://app:s3cret@rabbit/" },
 		"dev broker password":    func(c *Config) { c.RabbitMQURL = "amqps://app:guest@rabbit/" },
-		"insecure with tls":      func(c *Config) { c.Insecure, c.TLS = true, &tls.Config{} },
 		"negative concurrency":   func(c *Config) { c.Concurrency = -1 },
 		"lease too long":         func(c *Config) { c.LeaseTTL = 11 * time.Minute },
 		"lease too short":        func(c *Config) { c.LeaseTTL = 100 * time.Microsecond },
@@ -60,6 +59,10 @@ func TestNew_InsecureAllowsLocalDevelopment(t *testing.T) {
 	c.Insecure, c.RabbitMQURL, c.Token = true, "amqp://guest:guest@localhost/", "local-development-worker-token-change-me"
 	if _, err := New(c); err != nil {
 		t.Fatal(err)
+	}
+	c.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
+	if w, err := New(c); err != nil || w.cfg.TLS == nil {
+		t.Fatalf("development worker with scheduler TLS rejected: %v", err)
 	}
 }
 

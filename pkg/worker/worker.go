@@ -104,16 +104,16 @@ func New(cfg Config) (*Worker, error) {
 	}
 	var transport credentials.TransportCredentials
 	switch {
-	case cfg.Insecure:
-		transport = insecure.NewCredentials()
 	case cfg.TLS != nil:
 		transport = credentials.NewTLS(cfg.TLS.Clone())
+	case cfg.Insecure:
+		transport = insecure.NewCredentials()
 	default:
 		transport = credentials.NewTLS(nil)
 	}
 	conn, err := grpc.NewClient(cfg.SchedulerAddr,
 		grpc.WithTransportCredentials(transport),
-		grpc.WithPerRPCCredentials(bearer{token: cfg.Token, secure: !cfg.Insecure}),
+		grpc.WithPerRPCCredentials(bearer{token: cfg.Token, secure: cfg.TLS != nil || !cfg.Insecure}),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 	)
