@@ -12,6 +12,8 @@
 !internal/**
 !pkg/
 !pkg/**
+!examples/
+!examples/**
 **/.env*
 **/*.pem
 **/*.key
