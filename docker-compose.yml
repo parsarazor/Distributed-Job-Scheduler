@@ -1,79 +1,106 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.16-alpine3.23@sha256:a23cda8ed4733a74cd0a328fcb525a43c35cdbaa845b6fdb8f343646f995cc1e
+    restart: unless-stopped
     environment:
       POSTGRES_USER: scheduler
       POSTGRES_PASSWORD: scheduler
       POSTGRES_DB: scheduler
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U scheduler"]
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "scheduler", "-d", "scheduler"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redisdata:/data
-
   rabbitmq:
-    image: rabbitmq:3-management-alpine
+    image: ${RABBITMQ_IMAGE:-rabbitmq:4.3.8-management-alpine@sha256:977a6cf07ea9065116aaa40e7dc147ad25621d71a654248d36d79e5e7500be3e}
+    restart: unless-stopped
+    hostname: ${RABBITMQ_HOSTNAME:-rabbitmq}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: scheduler
       RABBITMQ_DEFAULT_PASS: scheduler
+      RABBITMQ_NODENAME: rabbit@${RABBITMQ_HOSTNAME:-rabbitmq}
     volumes:
       - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_protocol_listener amqp && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: migrate/migrate:v4.19.1@sha256:cc4ad8e19d66791e3689405d9a028ce6e9614f32032db14acda1469f7201d6e4
+    command: ["-path=/migrations", "-database=postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable", "up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   scheduler:
     build: .
+    restart: on-failure
     command: ["/bin/scheduler"]
     ports:
-      - "50051:50051"
+      - "127.0.0.1:50051:50051"
+      - "127.0.0.1:9090:9090"
     environment:
+      STORAGE: postgres
+      APP_ENV: development
+      WORKER_TOKEN: local-development-worker-token-change-me
+      # Admin RPCs stay off unless the operator supplies a token.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
       RABBITMQ_URL: amqp://scheduler:scheduler@rabbitmq:5672/
-      REDIS_ADDR: redis:6379
       PORT: "50051"
+      GRPC_HOST: "0.0.0.0"
+      METRICS_ADDR: "0.0.0.0:9090"
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
 
   worker:
     build: .
+    restart: on-failure
     command: ["/bin/worker"]
     ports:
-      - "50052:50052"
+      - "127.0.0.1:50052:50052"
+      - "127.0.0.1:9091:9091"
     environment:
-      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      STORAGE: postgres
+      APP_ENV: development
+      WORKER_TOKEN: local-development-worker-token-change-me
+      SCHEDULER_ADDR: scheduler:50051
       RABBITMQ_URL: amqp://scheduler:scheduler@rabbitmq:5672/
-      REDIS_ADDR: redis:6379
       WORKER_ID: worker-1
       PORT: "50052"
+      GRPC_HOST: "0.0.0.0"
+      METRICS_ADDR: "0.0.0.0:9091"
       MAX_CONCURRENCY: "10"
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1:9091/readyz"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
     depends_on:
-      postgres:
+      scheduler:
         condition: service_healthy
-      redis:
-        condition: service_started
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   pgdata:
-  redisdata:
   rabbitdata:

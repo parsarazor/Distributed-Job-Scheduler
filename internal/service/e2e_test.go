@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 )
 
@@ -25,7 +23,7 @@ func TestE2E_ChainedExecutionThroughWorkers(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), &domain.ConstantBackoff{Delay: time.Millisecond})
-	w := NewWorker("e2e-1", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("e2e-1", s, 4, 30*time.Second)
 	var order atomic.Int32
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		order.Add(1)
@@ -54,7 +52,7 @@ func TestE2E_FlakyHandlerRecovers(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), &domain.ConstantBackoff{Delay: 0})
-	w := NewWorker("e2e-flaky", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("e2e-flaky", s, 4, 30*time.Second)
 	var calls atomic.Int32
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 		if calls.Add(1) == 1 {
@@ -89,13 +87,11 @@ func TestE2E_CompetingWorkersSingleExecution(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
-	sharedLeases := lease.NewMemoryLeaseManager()
 	var executions atomic.Int32
 	mkWorker := func(id string) *Worker {
-		w := NewWorker(id, s, sharedLeases, 4)
+		w := NewWorker(id, s, 4, 30*time.Second)
 		w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
 			executions.Add(1)
-			time.Sleep(20 * time.Millisecond) // widen the race window
 			return nil
 		})
 		return w
@@ -103,16 +99,44 @@ func TestE2E_CompetingWorkersSingleExecution(t *testing.T) {
 	w1, w2 := mkWorker("w1"), mkWorker("w2")
 	tn, _ := domain.NewTenant("acme", "k")
 	_ = b.Tenants.Create(ctx, tn)
-	_, _ = s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-
-	var wg sync.WaitGroup
-	for _, w := range []*Worker{w1, w2} {
-		wg.Add(1)
-		go func(w *Worker) { defer wg.Done(); _, _ = w.RunOnce(ctx, 10) }(w)
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "default", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
+
+	start := make(chan struct{})
+	type result struct {
+		ran bool
+		err error
+	}
+	results := make(chan result, 2)
+	for _, w := range []*Worker{w1, w2} {
+		go func(w *Worker) {
+			<-start
+			ran, err := w.execute(ctx, job)
+			results <- result{ran: ran, err: err}
+		}(w)
+	}
+	close(start)
+	ran := 0
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if r.ran {
+			ran++
+		}
+	}
+	if ran != 1 {
+		t.Fatalf("exactly one worker must win the claim, got %d", ran)
+	}
 	if got := executions.Load(); got != 1 {
 		t.Fatalf("exactly one execution required, got %d", got)
+	}
+	stored, err := s.GetJob(ctx, job.ID)
+	if err != nil || stored.Status != domain.StatusSucceeded || stored.FencingToken != 1 {
+		t.Fatalf("claim must increment token once: job=%+v err=%v", stored, err)
 	}
 }
 
@@ -123,7 +147,7 @@ func TestE2E_TenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), nil)
-	w := NewWorker("w", s, lease.NewMemoryLeaseManager(), 4)
+	w := NewWorker("w", s, 4, 30*time.Second)
 	w.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error { return nil })
 
 	mkTenantJob := func(key string) {

@@ -142,23 +142,28 @@ func (JobPriority) EnumDescriptor() ([]byte, []int) {
 
 // Job represents a single unit of scheduled execution.
 type Job struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	Status        JobStatus              `protobuf:"varint,4,opt,name=status,proto3,enum=v1.JobStatus" json:"status,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
-	Priority      JobPriority            `protobuf:"varint,6,opt,name=priority,proto3,enum=v1.JobPriority" json:"priority,omitempty"`
-	AttemptCount  int32                  `protobuf:"varint,7,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
-	MaxAttempts   int32                  `protobuf:"varint,8,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
-	DependsOn     *string                `protobuf:"bytes,9,opt,name=depends_on,json=dependsOn,proto3,oneof" json:"depends_on,omitempty"`
-	ScheduledAt   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=scheduled_at,json=scheduledAt,proto3" json:"scheduled_at,omitempty"`
-	NextRetryAt   *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_retry_at,json=nextRetryAt,proto3,oneof" json:"next_retry_at,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	FencingToken  int64                  `protobuf:"varint,14,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TenantId string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name     string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Status   JobStatus              `protobuf:"varint,4,opt,name=status,proto3,enum=v1.JobStatus" json:"status,omitempty"`
+	// Omitted by ListJobs; retrieve payload with GetJob.
+	Payload        []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	Priority       JobPriority            `protobuf:"varint,6,opt,name=priority,proto3,enum=v1.JobPriority" json:"priority,omitempty"`
+	AttemptCount   int32                  `protobuf:"varint,7,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
+	MaxAttempts    int32                  `protobuf:"varint,8,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	DependsOn      *string                `protobuf:"bytes,9,opt,name=depends_on,json=dependsOn,proto3,oneof" json:"depends_on,omitempty"`
+	ScheduledAt    *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=scheduled_at,json=scheduledAt,proto3" json:"scheduled_at,omitempty"`
+	NextRetryAt    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_retry_at,json=nextRetryAt,proto3,oneof" json:"next_retry_at,omitempty"`
+	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	FencingToken   int64                  `protobuf:"varint,14,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	TimeoutMs      int64                  `protobuf:"varint,15,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	IdempotencyKey string                 `protobuf:"bytes,16,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	// Terminal payload retention has removed the executable input.
+	PayloadExpired bool `protobuf:"varint,17,opt,name=payload_expired,json=payloadExpired,proto3" json:"payload_expired,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Job) Reset() {
@@ -289,16 +294,38 @@ func (x *Job) GetFencingToken() int64 {
 	return 0
 }
 
+func (x *Job) GetTimeoutMs() int64 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *Job) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *Job) GetPayloadExpired() bool {
+	if x != nil {
+		return x.PayloadExpired
+	}
+	return false
+}
+
 // JobEvent records status transitions for audit trailing.
 type JobEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	JobId         string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	FromStatus    JobStatus              `protobuf:"varint,3,opt,name=from_status,json=fromStatus,proto3,enum=v1.JobStatus" json:"from_status,omitempty"`
-	ToStatus      JobStatus              `protobuf:"varint,4,opt,name=to_status,json=toStatus,proto3,enum=v1.JobStatus" json:"to_status,omitempty"`
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,6,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Message       string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	JobId      string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	FromStatus JobStatus              `protobuf:"varint,3,opt,name=from_status,json=fromStatus,proto3,enum=v1.JobStatus" json:"from_status,omitempty"`
+	ToStatus   JobStatus              `protobuf:"varint,4,opt,name=to_status,json=toStatus,proto3,enum=v1.JobStatus" json:"to_status,omitempty"`
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	WorkerId   string                 `protobuf:"bytes,6,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// A safe execution-result category; arbitrary handler error text is omitted.
+	Message       string `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -386,7 +413,7 @@ var File_proto_v1_job_proto protoreflect.FileDescriptor
 
 const file_proto_v1_job_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/v1/job.proto\x12\x02v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe0\x04\n" +
+	"\x12proto/v1/job.proto\x12\x02v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd1\x05\n" +
 	"\x03Job\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -405,7 +432,11 @@ const file_proto_v1_job_proto_rawDesc = "" +
 	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12#\n" +
-	"\rfencing_token\x18\x0e \x01(\x03R\ffencingTokenB\r\n" +
+	"\rfencing_token\x18\x0e \x01(\x03R\ffencingToken\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x0f \x01(\x03R\ttimeoutMs\x12'\n" +
+	"\x0fidempotency_key\x18\x10 \x01(\tR\x0eidempotencyKey\x12'\n" +
+	"\x0fpayload_expired\x18\x11 \x01(\bR\x0epayloadExpiredB\r\n" +
 	"\v_depends_onB\x10\n" +
 	"\x0e_next_retry_at\"\x81\x02\n" +
 	"\bJobEvent\x12\x0e\n" +

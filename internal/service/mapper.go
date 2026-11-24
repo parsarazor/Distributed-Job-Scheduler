@@ -88,18 +88,21 @@ func DomainJobToProto(j *domain.Job) *apiv1.Job {
 		return nil
 	}
 	out := &apiv1.Job{
-		Id:           j.ID.String(),
-		TenantId:     j.TenantID.String(),
-		Name:         j.Name,
-		Status:       DomainToProtoStatus(j.Status),
-		Payload:      []byte(j.Payload),
-		Priority:     DomainToProtoPriority(j.Priority),
-		AttemptCount: int32(j.AttemptCount),
-		MaxAttempts:  int32(j.MaxAttempts),
-		ScheduledAt:  timestamppb.New(j.ScheduledAt),
-		CreatedAt:    timestamppb.New(j.CreatedAt),
-		UpdatedAt:    timestamppb.New(j.UpdatedAt),
-		FencingToken: j.FencingToken,
+		Id:             j.ID.String(),
+		TenantId:       j.TenantID.String(),
+		Name:           j.Name,
+		Status:         DomainToProtoStatus(j.Status),
+		Payload:        []byte(j.Payload),
+		PayloadExpired: j.PayloadExpired,
+		Priority:       DomainToProtoPriority(j.Priority),
+		AttemptCount:   int32(j.AttemptCount),
+		MaxAttempts:    int32(j.MaxAttempts),
+		ScheduledAt:    timestamppb.New(j.ScheduledAt),
+		CreatedAt:      timestamppb.New(j.CreatedAt),
+		UpdatedAt:      timestamppb.New(j.UpdatedAt),
+		FencingToken:   j.FencingToken,
+		TimeoutMs:      j.Timeout.Milliseconds(),
+		IdempotencyKey: j.SubmissionKey,
 	}
 	if j.DependsOn != nil {
 		s := j.DependsOn.String()
@@ -109,6 +112,17 @@ func DomainJobToProto(j *domain.Job) *apiv1.Job {
 		out.NextRetryAt = timestamppb.New(*j.NextRetryAt)
 	}
 	return out
+}
+
+// DomainJobMetadataToProto preserves the Job wire shape without including its
+// payload. The repository also projects out payloads before materializing rows.
+func DomainJobMetadataToProto(j *domain.Job) *apiv1.Job {
+	if j == nil {
+		return nil
+	}
+	metadata := *j
+	metadata.Payload = nil
+	return DomainJobToProto(&metadata)
 }
 
 // ParseJobID parses a wire job id, returning uuid.Nil on empty input.

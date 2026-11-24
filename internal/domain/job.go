@@ -68,20 +68,30 @@ func ValidateTransition(from, to JobStatus) error {
 
 // Job represents a unit of work scheduled across the distributed cluster.
 type Job struct {
-	ID           uuid.UUID       `json:"id"`
-	TenantID     uuid.UUID       `json:"tenant_id"`
-	Name         string          `json:"name"`
-	Status       JobStatus       `json:"status"`
-	Payload      json.RawMessage `json:"payload"`
-	Priority     JobPriority     `json:"priority"`
-	AttemptCount int             `json:"attempt_count"`
-	MaxAttempts  int             `json:"max_attempts"`
-	DependsOn    *uuid.UUID      `json:"depends_on,omitempty"`
-	FencingToken int64           `json:"fencing_token"`
-	ScheduledAt  time.Time       `json:"scheduled_at"`
-	NextRetryAt  *time.Time      `json:"next_retry_at,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID             uuid.UUID       `json:"id"`
+	TenantID       uuid.UUID       `json:"tenant_id"`
+	Name           string          `json:"name"`
+	Status         JobStatus       `json:"status"`
+	Payload        json.RawMessage `json:"payload"`
+	PayloadExpired bool            `json:"payload_expired,omitempty"`
+	Priority       JobPriority     `json:"priority"`
+	AttemptCount   int             `json:"attempt_count"`
+	MaxAttempts    int             `json:"max_attempts"`
+	DependsOn      *uuid.UUID      `json:"depends_on,omitempty"`
+	FencingToken   int64           `json:"fencing_token"`
+	LeaseOwner     *string         `json:"lease_owner,omitempty"`
+	LastLeaseOwner *string         `json:"-"`
+	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
+	DispatchedAt   *time.Time      `json:"dispatched_at,omitempty"`
+	SubmissionKey  string          `json:"submission_key,omitempty"`
+	SubmissionHash string          `json:"-"`
+	Timeout        time.Duration   `json:"timeout"`
+	TraceParent    string          `json:"traceparent,omitempty"`
+	TraceState     string          `json:"tracestate,omitempty"`
+	ScheduledAt    time.Time       `json:"scheduled_at"`
+	NextRetryAt    *time.Time      `json:"next_retry_at,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 // CanCancel determines if the job is eligible for cancellation.
@@ -102,9 +112,23 @@ func (j *Job) TransitionTo(next JobStatus) error {
 	if err := ValidateTransition(j.Status, next); err != nil {
 		return err
 	}
+	if next != StatusRunning {
+		j.LeaseOwner = nil
+		j.LeaseExpiresAt = nil
+	}
+	if next == StatusPending {
+		j.DispatchedAt = nil
+	}
 	j.Status = next
 	j.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+// IdempotencyKey identifies this execution attempt for downstream side effects.
+// Retries use a new key; use the job ID alone when the effect must be unique
+// across all attempts (for example, sending one notification for a job).
+func (j *Job) IdempotencyKey() string {
+	return fmt.Sprintf("%s:%d", j.ID, j.AttemptCount+1)
 }
 
 // IsValidPriority reports whether p is one of the defined priority weights.
@@ -150,6 +174,7 @@ func NewJob(tenantID uuid.UUID, name string, payload json.RawMessage, priority J
 		MaxAttempts:  maxAttempts,
 		DependsOn:    dependsOn,
 		FencingToken: 0,
+		Timeout:      5 * time.Minute,
 		ScheduledAt:  scheduledAt.UTC(),
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -172,12 +197,13 @@ func DetectDependencyCycle(childID, parentID uuid.UUID, lookup func(uuid.UUID) (
 		if _, ok := seen[current]; ok {
 			return fmt.Errorf("%w: dependency cycle detected", ErrDependencyCycle)
 		}
+		if len(seen) > 128 {
+			return fmt.Errorf("%w: dependency chain exceeds 128 jobs", ErrInvalidInput)
+		}
 		seen[current] = struct{}{}
 		next, err := lookup(current)
 		if err != nil {
-			// Unknown ancestor: stop walking. The caller validates
-			// existence of the direct parent separately.
-			return nil
+			return err
 		}
 		if next == nil {
 			return nil

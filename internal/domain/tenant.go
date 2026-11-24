@@ -11,6 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// Per-tenant dispatch limits: at most MaxInFlight attempts may be announced or
+// running at once.
+const (
+	DefaultTenantMaxInFlight = 10
+	MaxTenantMaxInFlight     = 10000
+)
+
 // Tenant represents an authenticated tenant organization.
 // APIKeyHash must always hold the hex-encoded SHA-256 of the raw key, never
 // the raw key itself. Use NewTenant to enforce this invariant.
@@ -19,6 +26,10 @@ type Tenant struct {
 	Name       string    `json:"name"`
 	APIKeyHash string    `json:"-"`
 	CreatedAt  time.Time `json:"created_at"`
+	// MaxInFlight caps the tenant's dispatched and running attempts.
+	MaxInFlight int `json:"max_in_flight"`
+	// DisabledAt, when set, makes the tenant's API key stop authenticating.
+	DisabledAt *time.Time `json:"disabled_at,omitempty"`
 }
 
 // HashAPIKey returns the hex-encoded SHA-256 of a raw API key.
@@ -37,11 +48,20 @@ func NewTenant(name, rawAPIKey string) (*Tenant, error) {
 		return nil, errors.New("api key must not be empty")
 	}
 	return &Tenant{
-		ID:         uuid.New(),
-		Name:       name,
-		APIKeyHash: HashAPIKey(rawAPIKey),
-		CreatedAt:  time.Now().UTC(),
+		ID:          uuid.New(),
+		Name:        name,
+		APIKeyHash:  HashAPIKey(rawAPIKey),
+		CreatedAt:   time.Now().UTC(),
+		MaxInFlight: DefaultTenantMaxInFlight,
 	}, nil
+}
+
+// InFlightLimit returns MaxInFlight, or the default when it is unset.
+func (t *Tenant) InFlightLimit() int {
+	if t.MaxInFlight <= 0 {
+		return DefaultTenantMaxInFlight
+	}
+	return min(t.MaxInFlight, MaxTenantMaxInFlight)
 }
 
 // VerifyAPIKey compares a raw candidate key against the stored hash in

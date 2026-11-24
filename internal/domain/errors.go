@@ -3,6 +3,13 @@ package domain
 import "errors"
 
 var (
+	// ErrInvalidInput indicates an invalid API field.
+	ErrInvalidInput = errors.New("invalid input")
+	// ErrIdempotencyConflict indicates that a submission key identifies different input.
+	ErrIdempotencyConflict = errors.New("submission key already used for different input")
+	ErrPayloadExpired      = errors.New("terminal job payload has expired; submit a new job")
+	// ErrTenantLimit indicates the tenant's outstanding quota or submission rate is exceeded.
+	ErrTenantLimit = errors.New("tenant quota or submission rate exceeded")
 	// ErrJobNotFound indicates the requested job does not exist.
 	ErrJobNotFound = errors.New("job not found")
 
@@ -12,9 +19,17 @@ var (
 	// ErrInvalidTransition indicates an illegal state machine jump.
 	ErrInvalidTransition = errors.New("invalid job status transition")
 
-	// ErrFencingTokenStale is raised when a worker attempts to update a job using a lease/token
-	// that has been superseded by a higher fencing token.
-	ErrFencingTokenStale = errors.New("fencing token is stale: lease expired or superseded")
+	// ErrFencingTokenStale rejects any token unequal to the stored execution token.
+	ErrFencingTokenStale = errors.New("fencing token does not match current execution")
+
+	// ErrJobNotClaimable indicates a duplicate, stale, or not-yet-ready announcement.
+	ErrJobNotClaimable = errors.New("job is not ready to be claimed")
+
+	// ErrLeaseLost indicates the execution no longer owns a live lease.
+	ErrLeaseLost = errors.New("job lease lost")
+
+	// ErrInvalidLease indicates an empty owner or nonpositive lease duration.
+	ErrInvalidLease = errors.New("lease requires a worker ID and positive TTL")
 
 	// ErrDependencyNotMet indicates a parent job has not successfully completed.
 	ErrDependencyNotMet = errors.New("job dependency has not succeeded yet")

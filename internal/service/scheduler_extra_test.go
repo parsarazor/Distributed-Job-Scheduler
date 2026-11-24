@@ -71,7 +71,7 @@ func TestScheduler_ErrorPaths(t *testing.T) {
 		s, b := newTestScheduler()
 		tn := seedTenant(t, s, b)
 		j, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
-		_, _ = s.DispatchReady(ctx, 10)
+		claimTestJob(t, s, j.ID, "w")
 		if _, err := s.CancelJob(ctx, j.ID, "late"); err != domain.ErrJobCannotBeCancelled {
 			t.Fatalf("got %v", err)
 		}
@@ -113,8 +113,10 @@ func TestScheduler_ErrorPaths(t *testing.T) {
 		j, _ := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "j", Payload: json.RawMessage(`{}`), Priority: domain.PriorityDefault, MaxAttempts: 3, ScheduledAt: time.Now().UTC()})
 		// Leave the job genuinely stuck in failed (e.g. worker crashed after
 		// reporting failure but before recycling): drive the repo directly.
-		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusPending, domain.StatusRunning, 0)
-		_ = b.Jobs.TransitionStatus(ctx, j.ID, domain.StatusRunning, domain.StatusFailed, 0)
+		token := claimTestJob(t, s, j.ID, "w")
+		if _, err := b.Jobs.CompleteLease(ctx, j.ID, "w", token, domain.StatusFailed); err != nil {
+			t.Fatal(err)
+		}
 		stored, _ := b.Jobs.GetByID(ctx, j.ID)
 		past := time.Now().UTC().Add(-time.Second)
 		stored.NextRetryAt = &past
@@ -164,11 +166,66 @@ func TestScheduler_RetryBackoffBlocksReadyDispatch(t *testing.T) {
 	if _, err := s.DispatchReady(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
+	claimTestJob(t, s, j.ID, "w")
 	running, _ := s.GetJob(ctx, j.ID)
 	if _, err := s.ReportCompletion(ctx, j.ID, "w", domain.StatusFailed, running.FencingToken, "temporary"); err != nil {
 		t.Fatal(err)
 	}
 	if ready, err := b.Jobs.GetReadyJobs(ctx, 10); err != nil || len(ready) != 0 {
 		t.Fatalf("retry must remain unavailable until its backoff expires, ready=%d err=%v", len(ready), err)
+	}
+}
+
+// M3: a failed job with retries left goes back to pending; a failure caused
+// by an unregistered handler dead-letters immediately without consuming them.
+func TestScheduler_UnregisteredHandlerDeadLettersImmediately(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, broker.NewMemoryBroker(), &domain.ConstantBackoff{Delay: time.Millisecond})
+
+	tn := seedTenant(t, s, b)
+	jRetry, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "flaky", Priority: domain.PriorityDefault, MaxAttempts: 5, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DispatchReady(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	token, err := s.jobs.ClaimJob(ctx, jRetry.ID, "w", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReportCompletion(ctx, jRetry.ID, "w", domain.StatusFailed, token, "temporary"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetJob(ctx, jRetry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusPending || got.AttemptCount != 1 {
+		t.Fatalf("retryable failure: status=%s attempts=%d", got.Status, got.AttemptCount)
+	}
+
+	jNoHandler, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "ghost", Priority: domain.PriorityDefault, MaxAttempts: 5, ScheduledAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DispatchReady(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	token, err = s.jobs.ClaimJob(ctx, jNoHandler.ID, "w", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReportCompletion(ctx, jNoHandler.ID, "w", domain.StatusFailed, token, domain.ReasonHandlerNotRegistered); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetJob(ctx, jNoHandler.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusDead {
+		t.Fatalf("unregistered handler must dead-letter immediately, got %s", got.Status)
 	}
 }

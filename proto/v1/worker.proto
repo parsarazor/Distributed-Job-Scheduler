@@ -11,9 +11,10 @@ import "proto/v1/job.proto";
 // and cancellation control over distributed worker nodes.
 service WorkerService {
   // Execute directly submits or dispatches a job to a worker node for execution.
+  // Admin-only: worker tokens authenticate workers to the scheduler, not to each other.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
 
-  // Heartbeat periodically renews the worker lease and checks if abort was requested.
+  // Heartbeat periodically renews the worker lease and checks if abort was requested. Admin-only.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
   // GetWorkerStatus queries the current capacity, concurrency, and active tasks on the worker.
@@ -55,7 +56,8 @@ message ActiveJobInfo {
   string tenant_id = 2;
   string name = 3;
   google.protobuf.Timestamp started_at = 4;
-  int64 fencing_token = 5;
+  // Deprecated: never populated; fencing tokens must not leave the lease path.
+  int64 fencing_token = 5 [deprecated = true];
 }
 
 message GetWorkerStatusResponse {
@@ -71,6 +73,8 @@ message GetWorkerStatusResponse {
 message CancelExecutionRequest {
   string job_id = 1;
   string reason = 2;
+  // Required execution identity; zero and stale tokens never cancel work.
+  int64 fencing_token = 3;
 }
 
 message CancelExecutionResponse {

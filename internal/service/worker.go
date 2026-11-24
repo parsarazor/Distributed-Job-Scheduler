@@ -2,26 +2,30 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"golang.org/x/sync/semaphore"
 )
 
-// Handler executes one job. It must respect ctx cancellation (Drain support).
+// Handler executes one job. It must respect ctx cancellation, including lease loss.
 type Handler func(ctx context.Context, job *domain.Job) error
 
-// Worker pulls jobs from the Scheduler, executes them with bounded
-// concurrency (ADR 005), renews leases via heartbeat, and reports completion
-// with fencing tokens (ADR 002/009).
+// Worker claims jobs atomically through its JobControl, executes them with
+// bounded concurrency and renews their leases until execution finishes.
 type Worker struct {
 	id             string
-	sched          *Scheduler
-	leases         lease.LeaseManager
+	sched          *Scheduler // in-process only; nil for remote workers
+	ctl            JobControl
+	leaseTTL       time.Duration
 	sem            *semaphore.Weighted
 	maxConcurrency int64
 	handlers       map[string]Handler
@@ -29,30 +33,68 @@ type Worker struct {
 	active         map[uuid.UUID]*activeJob
 	draining       bool
 	startedAt      time.Time
+	jobTimeout     time.Duration
+	completionWait time.Duration
+	intakeCancel   context.CancelFunc
+	lifetime       context.Context
+	stop           context.CancelCauseFunc
 }
 
 type activeJob struct {
-	job        *domain.Job
-	token      int64 // database fencing token used for completion reports
-	leaseToken int64 // lease-manager token used for renewals
-	started    time.Time
-	cancel     context.CancelFunc
+	info       ActiveInfo
+	cancel     context.CancelCauseFunc
+	gate       *semaphore.Weighted // context-aware renewal/completion/cancel admission
+	ctx        context.Context
+	deadline   time.Time
+	finished   bool
+	completing bool
+	// handlerDone is set without the gate when the handler returns, so a
+	// renewal stalled until the deadline cannot discard a finished result.
+	handlerDone atomic.Bool
+	leaseLost   bool
 }
 
-// NewWorker creates a worker with maxConcurrency execution slots.
-func NewWorker(id string, sched *Scheduler, leases lease.LeaseManager, maxConcurrency int64) *Worker {
+// NewWorker creates a worker with maxConcurrency slots and a repository-owned lease.
+// Nonpositive values select the defaults of 10 slots and a 30-second lease.
+func NewWorker(id string, sched *Scheduler, maxConcurrency int64, leaseTTL time.Duration) *Worker {
+	return newWorker(id, sched, schedulerControl{s: sched}, maxConcurrency, leaseTTL)
+}
+
+// NewRemoteWorker creates a database-free worker that claims, renews and
+// completes jobs through the scheduler. It consumes announcements only.
+func NewRemoteWorker(id string, ctl JobControl, maxConcurrency int64, leaseTTL time.Duration) *Worker {
+	return newWorker(id, nil, ctl, maxConcurrency, leaseTTL)
+}
+
+// DefaultCompletionWindow is how long a finished handler's result is retried
+// while the scheduler is unreachable.
+const DefaultCompletionWindow = time.Minute
+
+// SetCompletionWindow bounds completion retries after the handler returns.
+// Nonpositive values select DefaultCompletionWindow.
+func (w *Worker) SetCompletionWindow(d time.Duration) {
+	if d <= 0 {
+		d = DefaultCompletionWindow
+	}
+	w.completionWait = d
+}
+
+func newWorker(id string, sched *Scheduler, ctl JobControl, maxConcurrency int64, leaseTTL time.Duration) *Worker {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 10
 	}
+	if leaseTTL <= 0 {
+		leaseTTL = 30 * time.Second
+	}
+	lifetime, stop := context.WithCancelCause(context.Background())
 	return &Worker{
-		id:             id,
-		sched:          sched,
-		leases:         leases,
-		sem:            semaphore.NewWeighted(maxConcurrency),
-		maxConcurrency: maxConcurrency,
-		handlers:       make(map[string]Handler),
-		active:         make(map[uuid.UUID]*activeJob),
+		id: id, sched: sched, ctl: ctl, leaseTTL: leaseTTL,
+		sem: semaphore.NewWeighted(maxConcurrency), maxConcurrency: maxConcurrency,
+		handlers: make(map[string]Handler), active: make(map[uuid.UUID]*activeJob),
 		startedAt:      time.Now().UTC(),
+		jobTimeout:     5 * time.Minute,
+		completionWait: DefaultCompletionWindow,
+		lifetime:       lifetime, stop: stop,
 	}
 }
 
@@ -67,18 +109,62 @@ func (w *Worker) RegisterHandler(name string, h Handler) {
 func (w *Worker) ID() string { return w.id }
 
 // Drain stops accepting new jobs; in-flight jobs run to completion.
-func (w *Worker) Drain() { w.mu.Lock(); w.draining = true; w.mu.Unlock() }
+func (w *Worker) Drain() {
+	w.mu.Lock()
+	w.draining = true
+	cancel := w.intakeCancel
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// SetIntakeCancel connects drain controls to the real broker/poller intake.
+// It is safe to wire after an RPC has already requested drain.
+func (w *Worker) SetIntakeCancel(cancel context.CancelFunc) {
+	w.mu.Lock()
+	w.intakeCancel = cancel
+	draining := w.draining
+	w.mu.Unlock()
+	if draining && cancel != nil {
+		cancel()
+	}
+}
+
+// CancelAll escalates a drain by canceling admitted claims and handlers.
+// Handlers must cooperate with cancellation; a process may bound Wait separately.
+func (w *Worker) CancelAll() {
+	w.Drain()
+	w.stop(context.Canceled)
+}
+
+// Wait drains admitted executions, including work still acquiring its DB claim.
+func (w *Worker) Wait(ctx context.Context) error {
+	w.Drain()
+	if err := w.sem.Acquire(ctx, w.maxConcurrency); err != nil {
+		return err
+	}
+	w.sem.Release(w.maxConcurrency)
+	return nil
+}
+
+// SetJobTimeout sets the default deadline for executions. Configure before use.
+func (w *Worker) SetJobTimeout(timeout time.Duration) { w.jobTimeout = timeout }
 
 // IsDraining reports drain state.
-func (w *Worker) IsDraining() bool { w.mu.RLock(); defer w.mu.RUnlock(); return w.draining }
+func (w *Worker) IsDraining() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.draining
+}
 
 // ActiveJobs returns a snapshot of in-flight jobs.
 func (w *Worker) ActiveJobs() []ActiveInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	out := make([]ActiveInfo, 0, len(w.active))
-	for id, a := range w.active {
-		out = append(out, ActiveInfo{JobID: id, TenantID: a.job.TenantID, Name: a.job.Name, StartedAt: a.started, FencingToken: a.token})
+	for _, a := range w.active {
+		out = append(out, a.info)
 	}
 	return out
 }
@@ -92,14 +178,13 @@ type ActiveInfo struct {
 	FencingToken int64
 }
 
-// RunOnce dispatches ready jobs and executes one batch synchronously.
-// It is the functional core used by the demo binary and tests.
+// RunOnce polls ready jobs and executes one batch synchronously.
 func (w *Worker) RunOnce(ctx context.Context, batchSize int) (int, error) {
-	w.mu.RLock()
-	draining := w.draining
-	w.mu.RUnlock()
-	if draining {
+	if w.IsDraining() {
 		return 0, nil
+	}
+	if w.sched == nil {
+		return 0, errors.New("polling requires an in-process scheduler")
 	}
 	ready, err := w.sched.jobs.GetReadyJobs(ctx, batchSize)
 	if err != nil {
@@ -107,157 +192,68 @@ func (w *Worker) RunOnce(ctx context.Context, batchSize int) (int, error) {
 	}
 	done := 0
 	for _, job := range ready {
-		if err := w.sem.Acquire(ctx, 1); err != nil {
+		if w.IsDraining() {
 			break
 		}
-		if err := w.execute(ctx, job); err == nil {
+		if err := w.sem.Acquire(ctx, 1); err != nil {
+			return done, err
+		}
+		if w.IsDraining() {
+			w.sem.Release(1)
+			break
+		}
+		ran, err := w.execute(ctx, job)
+		w.sem.Release(1)
+		if ran {
 			done++
 		}
-		w.sem.Release(1)
+		if err != nil && !errors.Is(err, domain.ErrLeaseLost) && !errors.Is(err, domain.ErrFencingTokenStale) {
+			return done, err
+		}
 	}
 	return done, nil
 }
 
-// StartExecution accepts a broker-delivered job without exceeding the worker's
-// concurrency limit. It returns false when draining or saturated so callers
-// can requeue the delivery instead of silently losing it.
+// StartExecution accepts an announcement without exceeding the execution limit.
+// Acceptance is not ownership: execute still has to win the repository claim.
 func (w *Worker) StartExecution(ctx context.Context, job *domain.Job) bool {
-	w.mu.RLock()
-	draining := w.draining
-	w.mu.RUnlock()
-	if draining || !w.sem.TryAcquire(1) {
+	w.mu.Lock()
+	if job == nil || w.draining {
+		w.mu.Unlock()
+		return false
+	}
+	accepted := w.sem.TryAcquire(1)
+	w.mu.Unlock()
+	if !accepted {
 		return false
 	}
 	go func() {
 		defer w.sem.Release(1)
-		_ = w.execute(ctx, job)
+		if _, err := w.execute(ctx, job); err != nil {
+			slog.Error("execute job", "worker_id", w.id, "job_id", job.ID, "tenant_id", job.TenantID, "error", err)
+		}
 	}()
 	return true
+}
+
+// HandleMessage processes a durable announcement synchronously. The consumer
+// acknowledges only after the execution result has committed. Redeliveries of
+// a finished or superseded attempt are harmless.
+func (w *Worker) HandleMessage(ctx context.Context, payload []byte) error {
+	var job domain.Job
+	if err := json.Unmarshal(payload, &job); err != nil || job.ID == uuid.Nil || job.AttemptCount < 0 || job.FencingToken < 0 {
+		return broker.Permanent(errors.New("invalid job announcement"))
+	}
+	if err := w.sem.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer w.sem.Release(1)
+	if w.IsDraining() {
+		return fmt.Errorf("worker is draining")
+	}
+	_, err := w.execute(ctx, &job)
+	return err
 }
 
 // MaxConcurrency returns the configured execution limit.
 func (w *Worker) MaxConcurrency() int64 { return w.maxConcurrency }
-
-func (w *Worker) execute(ctx context.Context, job *domain.Job) error {
-	w.mu.RLock()
-	h := w.handlers[job.Name]
-	fallback := w.handlers["default"]
-	w.mu.RUnlock()
-	if h == nil {
-		h = fallback
-	}
-	if h == nil {
-		h = func(context.Context, *domain.Job) error { return nil }
-	}
-
-	leaseToken, err := w.leases.Acquire(ctx, job.ID, w.id, 30*time.Second)
-	if err != nil {
-		return err
-	}
-	current, err := w.sched.jobs.GetByID(ctx, job.ID)
-	if err != nil {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return err
-	}
-	if current.IsTerminal() {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return nil // duplicate delivery of an already-completed job
-	}
-	if current.Status != domain.StatusPending && current.Status != domain.StatusRunning {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return domain.ErrInvalidTransition
-	}
-	token, err := w.sched.jobs.IncrementFencingToken(ctx, job.ID)
-	if err != nil {
-		_ = w.leases.Release(ctx, job.ID, w.id)
-		return err
-	}
-	if current.Status == domain.StatusPending {
-		if err := w.sched.jobs.TransitionStatus(ctx, job.ID, domain.StatusPending, domain.StatusRunning, token); err != nil {
-			_ = w.leases.Release(ctx, job.ID, w.id)
-			return err
-		}
-	}
-
-	job = current
-	job.FencingToken = token
-	jobCtx, cancel := context.WithCancel(ctx)
-	w.mu.Lock()
-	w.active[job.ID] = &activeJob{job: job, token: token, leaseToken: leaseToken, started: time.Now().UTC(), cancel: cancel}
-	w.mu.Unlock()
-
-	// Heartbeat renews the lease until execution finishes.
-	stopHb := make(chan struct{})
-	go func() {
-		t := time.NewTicker(10 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-stopHb:
-				return
-			case <-t.C:
-				_ = w.leases.Renew(context.Background(), job.ID, w.id, leaseToken, 30*time.Second)
-			case <-jobCtx.Done():
-				return
-			}
-		}
-	}()
-
-	// A panicking handler must fail the job, not crash the worker or strand
-	// the lease: recover, report failure (→ retry path), always clean up.
-	runErr := func() (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("handler panic: %v", r)
-			}
-		}()
-		return h(jobCtx, job)
-	}()
-	close(stopHb)
-	cancel()
-	_ = w.leases.Release(ctx, job.ID, w.id)
-
-	w.mu.Lock()
-	delete(w.active, job.ID)
-	w.mu.Unlock()
-
-	final := domain.StatusSucceeded
-	msg := ""
-	if runErr != nil {
-		final = domain.StatusFailed
-		msg = runErr.Error()
-	}
-	_, repErr := w.sched.ReportCompletion(ctx, job.ID, w.id, final, token, msg)
-	return repErr
-}
-
-// Heartbeat renews the lease for an in-flight job; abort is requested when
-// the job no longer exists or is terminal.
-func (w *Worker) Heartbeat(ctx context.Context, jobID uuid.UUID, token int64) (renewed bool, abort bool) {
-	w.mu.RLock()
-	a, active := w.active[jobID]
-	w.mu.RUnlock()
-	if !active || a.token != token {
-		return false, true
-	}
-	if err := w.leases.Renew(ctx, jobID, w.id, a.leaseToken, 30*time.Second); err != nil {
-		return false, true
-	}
-	j, err := w.sched.jobs.GetByID(ctx, jobID)
-	if err != nil || j.IsTerminal() {
-		return true, true
-	}
-	return true, false
-}
-
-// CancelExecution aborts context for an in-flight job.
-func (w *Worker) CancelExecution(jobID uuid.UUID) bool {
-	w.mu.RLock()
-	a, ok := w.active[jobID]
-	w.mu.RUnlock()
-	if !ok {
-		return false
-	}
-	a.cancel()
-	return true
-}

@@ -159,7 +159,7 @@ func TestTenant_HashContract(t *testing.T) {
 	t.Parallel()
 	t.Run("deterministic", func(t *testing.T) {
 		t.Parallel()
-		if HashAPIKey("k") != HashAPIKey("k") || HashAPIKey("a") == HashAPIKey("b") {
+		if HashAPIKey("k") != "8254c329a92850f6d539dd376f4816ee2764517da5e0235514af433164480d7a" || HashAPIKey("a") == HashAPIKey("b") {
 			t.Fatal("hash must be deterministic and distinguishing")
 		}
 	})

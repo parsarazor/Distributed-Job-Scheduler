@@ -12,7 +12,6 @@ import (
 
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/lease"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
 	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
 )
@@ -21,13 +20,15 @@ func main() {
 	ctx := context.Background()
 	b := memory.NewBundle()
 	bus := broker.NewMemoryBroker()
-	leases := lease.NewMemoryLeaseManager()
 	sched := service.NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, bus, nil)
-	worker := service.NewWorker("demo-worker", sched, leases, 4)
-	worker.RegisterHandler("default", func(ctx context.Context, job *domain.Job) error {
+	worker := service.NewWorker("demo-worker", sched, 4, 30*time.Second)
+	handler := func(ctx context.Context, job *domain.Job) error {
 		fmt.Printf("  executing %-16s id=%s prio=%d\n", job.Name, job.ID.String()[:8], int(job.Priority))
 		return nil
-	})
+	}
+	worker.RegisterHandler("default", handler)
+	worker.RegisterHandler("parent-job", handler)
+	worker.RegisterHandler("child-job", handler)
 
 	tenant, err := domain.NewTenant("acme", "secret-key")
 	if err != nil {
@@ -64,31 +65,25 @@ func main() {
 	}
 	fmt.Println("gate check: only parent is ready (child correctly gated)")
 
-	if n, _ := sched.DispatchReady(ctx, 10); n != 1 {
+	if n, err := sched.DispatchReady(ctx, 10); err != nil || n != 1 {
 		log.Fatalf("expected 1 dispatch (parent only), got %d", n)
 	}
-	fmt.Println("dispatch 1: parent -> running")
-
-	if n, _ := worker.RunOnce(ctx, 10); n != 0 {
-		fmt.Printf("worker pass 1: %d (parent already running, nothing new)\n", n)
+	fmt.Println("dispatch 1: parent announced")
+	if n, err := worker.RunOnce(ctx, 10); err != nil || n != 1 {
+		log.Fatalf("worker expected to execute parent, ran %d: %v", n, err)
 	}
-	// Complete the parent as the worker would.
 	p, _ := sched.GetJob(ctx, parent.ID)
-	n, err := sched.ReportCompletion(ctx, parent.ID, "demo-worker", domain.StatusSucceeded, p.FencingToken, "")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("parent completed: dependents unlocked=%d\n", n)
+	fmt.Printf("parent completed: %s\n", p.Status)
 
 	// Now the child is eligible.
-	if n, _ := sched.DispatchReady(ctx, 10); n != 1 {
+	if n, err := sched.DispatchReady(ctx, 10); err != nil || n != 1 {
 		log.Fatalf("expected child dispatch, got %d", n)
 	}
-	c, _ := sched.GetJob(ctx, child.ID)
-	if _, err := sched.ReportCompletion(ctx, child.ID, "demo-worker", domain.StatusSucceeded, c.FencingToken, ""); err != nil {
-		log.Fatal(err)
+	if n, err := worker.RunOnce(ctx, 10); err != nil || n != 1 {
+		log.Fatalf("worker expected to execute child, ran %d: %v", n, err)
 	}
-	fmt.Println("child completed")
+	c, _ := sched.GetJob(ctx, child.ID)
+	fmt.Printf("child completed: %s\n", c.Status)
 
 	// Worker path: submit an independent job and let the bounded worker
 	// execute it end-to-end (lease -> run -> fenced report).

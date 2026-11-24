@@ -2,14 +2,14 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 )
 
-// Principle: at-least-once + idempotent redelivery (ADR 011). Republishing
-// the same (routingKey, messageID) must not duplicate; a different messageID
-// must not be swallowed.
-func TestMemoryBroker_IdempotentPublish(t *testing.T) {
+// RabbitMQ treats message_id as metadata: an outbox retry can publish the same
+// ID again. Memory mode must expose those duplicates to test durable deduplication.
+func TestMemoryBroker_AtLeastOncePublish(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	b := NewMemoryBroker()
@@ -25,8 +25,11 @@ func TestMemoryBroker_IdempotentPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := b.Published()
-	if len(got) != 2 {
-		t.Fatalf("want 2 stored messages after duplicate publish, got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("want all 3 publish attempts recorded, got %d", len(got))
+	}
+	if got[0].MessageID != got[1].MessageID {
+		t.Fatal("repeated message ID was not preserved")
 	}
 }
 
@@ -42,6 +45,42 @@ func TestMemoryBroker_PayloadIsolation(t *testing.T) {
 	payload[0] = 'X'
 	if got := b.Published()[0].Payload[0]; got != '{' {
 		t.Fatalf("stored payload corrupted by caller mutation: %q", got)
+	}
+	view := b.Published()
+	view[0].Payload[0] = 'Y'
+	view[0].MessageID = "changed"
+	if got := b.Published()[0]; got.Payload[0] != '{' || got.MessageID != "m" {
+		t.Fatalf("Published returned mutable broker state: %+v", got)
+	}
+}
+
+func TestMemoryBroker_CancellationAndClose(t *testing.T) {
+	t.Parallel()
+	b := NewMemoryBroker()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.Publish(ctx, "k", nil, "m"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Publish = %v", err)
+	}
+	if len(b.Published()) != 0 {
+		t.Fatal("canceled publish recorded a message")
+	}
+	if err := b.Publish(context.Background(), "k", []byte("retained"), "m"); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Go(func() {
+			_ = b.Close()
+			_ = b.Published()
+			if err := b.Publish(context.Background(), "k", nil, "m"); !errors.Is(err, ErrClosed) {
+				t.Errorf("publish after close = %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if len(b.Published()) != 1 {
+		t.Fatal("Close lost introspection or accepted another message")
 	}
 }
 

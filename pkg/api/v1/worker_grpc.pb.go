@@ -34,8 +34,9 @@ const (
 // and cancellation control over distributed worker nodes.
 type WorkerServiceClient interface {
 	// Execute directly submits or dispatches a job to a worker node for execution.
+	// Admin-only: worker tokens authenticate workers to the scheduler, not to each other.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
-	// Heartbeat periodically renews the worker lease and checks if abort was requested.
+	// Heartbeat periodically renews the worker lease and checks if abort was requested. Admin-only.
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	// GetWorkerStatus queries the current capacity, concurrency, and active tasks on the worker.
 	GetWorkerStatus(ctx context.Context, in *GetWorkerStatusRequest, opts ...grpc.CallOption) (*GetWorkerStatusResponse, error)
@@ -111,8 +112,9 @@ func (c *workerServiceClient) DrainWorker(ctx context.Context, in *DrainWorkerRe
 // and cancellation control over distributed worker nodes.
 type WorkerServiceServer interface {
 	// Execute directly submits or dispatches a job to a worker node for execution.
+	// Admin-only: worker tokens authenticate workers to the scheduler, not to each other.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
-	// Heartbeat periodically renews the worker lease and checks if abort was requested.
+	// Heartbeat periodically renews the worker lease and checks if abort was requested. Admin-only.
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	// GetWorkerStatus queries the current capacity, concurrency, and active tasks on the worker.
 	GetWorkerStatus(context.Context, *GetWorkerStatusRequest) (*GetWorkerStatusResponse, error)
