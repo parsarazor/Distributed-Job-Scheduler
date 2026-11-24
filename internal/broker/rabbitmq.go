@@ -67,6 +67,7 @@ type publisherSession struct {
 type consumerSession struct {
 	*rabbitSession
 	deliveries <-chan amqp.Delivery
+	lost       <-chan struct{}
 	consumers  int
 	done       chan struct{}
 }
@@ -361,21 +362,27 @@ func (r *RabbitMQBroker) newConsumer(ctx context.Context, bindings []binding, pr
 		return nil, err
 	}
 	done := make(chan struct{})
-	return &consumerSession{rabbitSession: session, deliveries: mergeDeliveries(sources, done), consumers: len(bindings), done: done}, nil
+	deliveries, lost := mergeDeliveries(sources, done)
+	return &consumerSession{rabbitSession: session, deliveries: deliveries, lost: lost, consumers: len(bindings), done: done}, nil
 }
 
 // mergeDeliveries fans several subscriptions into one channel. Forwarders stop
 // at done; a delivery they still hold is requeued when the connection closes.
-func mergeDeliveries(sources []<-chan amqp.Delivery, done <-chan struct{}) <-chan amqp.Delivery {
+// lost closes when any subscription ends (e.g. its queue was deleted), so the
+// session reconnects and redeclares every queue instead of silently shrinking.
+func mergeDeliveries(sources []<-chan amqp.Delivery, done <-chan struct{}) (<-chan amqp.Delivery, <-chan struct{}) {
 	if len(sources) == 1 {
-		return sources[0]
+		return sources[0], nil
 	}
 	out := make(chan amqp.Delivery)
+	lost := make(chan struct{})
+	var lostOnce sync.Once
 	var wg sync.WaitGroup
 	for _, src := range sources {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer lostOnce.Do(func() { close(lost) })
 			for d := range src {
 				select {
 				case out <- d:
@@ -386,7 +393,7 @@ func mergeDeliveries(sources []<-chan amqp.Delivery, done <-chan struct{}) <-cha
 		}()
 	}
 	go func() { wg.Wait(); close(out) }()
-	return out
+	return out, lost
 }
 
 // Consume retries connection, topology and subscription failures with exponential
@@ -577,6 +584,8 @@ intake:
 			break intake
 		case <-s.closed:
 			break intake
+		case <-s.lost:
+			break intake
 		case <-settleErrors:
 			break intake
 		case delivery, ok := <-s.deliveries:
@@ -587,6 +596,8 @@ intake:
 			case <-intakeCtx.Done():
 				break intake
 			case <-s.closed:
+				break intake
+			case <-s.lost:
 				break intake
 			case <-settleErrors:
 				break intake

@@ -805,3 +805,20 @@ func TestRabbitMQ_DialCancellationInterruptsAMQPHandshake(t *testing.T) {
 		t.Fatalf("stalled handshake = %v", err)
 	}
 }
+
+func TestMergeDeliveries_LostWhenAnySubscriptionEnds(t *testing.T) {
+	a, b := make(chan amqp.Delivery), make(chan amqp.Delivery)
+	done := make(chan struct{})
+	defer close(done)
+	out, lost := mergeDeliveries([]<-chan amqp.Delivery{a, b}, done)
+	go func() { b <- amqp.Delivery{MessageId: "b"} }()
+	if d := <-out; d.MessageId != "b" {
+		t.Fatalf("got %q", d.MessageId)
+	}
+	close(a)
+	select {
+	case <-lost:
+	case <-time.After(time.Second):
+		t.Fatal("ending one subscription must mark the session lost")
+	}
+}
