@@ -84,9 +84,10 @@ func NewFromEnv(ctx context.Context) (*Deps, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The wait is measured from outbox rows, which are pruned after 7 days.
-	if noWorkerTimeout > 7*24*time.Hour {
-		return nil, fmt.Errorf("NO_WORKER_TIMEOUT must not exceed 168h (outbox retention)")
+	// The wait is measured from outbox rows, which are pruned after 7 days; keep
+	// a day of margin so the first refusal still exists when the deadline passes.
+	if noWorkerTimeout > 6*24*time.Hour {
+		return nil, fmt.Errorf("NO_WORKER_TIMEOUT must not exceed 144h (outbox retention minus a day)")
 	}
 	var (
 		jobs        repository.JobRepository
