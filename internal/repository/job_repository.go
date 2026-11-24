@@ -85,9 +85,10 @@ type JobRepository interface {
 
 	// DeferUnroutable handles a dispatched pending attempt (matching token)
 	// whose announcement had no queue: it clears the dispatch marker, bumps the
-	// token and holds the job for retryAfter. If the job has been ready for
-	// longer than maxWait it transitions to StatusDead instead and returns
-	// true. Other jobs return ErrJobNotClaimable.
+	// token and holds the job for retryAfter. If its announcements have been
+	// refused for longer than maxWait (since it last reached a worker queue or
+	// was requeued) it transitions to StatusDead instead and returns true.
+	// Other jobs return ErrJobNotClaimable.
 	DeferUnroutable(ctx context.Context, id uuid.UUID, token int64, retryAfter, maxWait time.Duration) (dead bool, err error)
 
 	// GetPendingRetryJobs locks legacy failed jobs that are due, unscheduled or exhausted.

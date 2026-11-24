@@ -188,16 +188,28 @@ func (r *JobRepo) DeferUnroutable(ctx context.Context, id uuid.UUID, token int64
 		return false, domain.ErrJobNotClaimable
 	}
 	now := time.Now().UTC()
-	readySince := j.ScheduledAt
+	var after time.Time
 	for _, e := range s.events[id] {
-		if e.ToStatus == domain.StatusPending && e.OccurredAt.After(readySince) {
-			readySince = e.OccurredAt
+		if e.FromStatus == domain.StatusDead && e.ToStatus == domain.StatusPending && e.OccurredAt.After(after) {
+			after = e.OccurredAt
+		}
+	}
+	noWorker := func(e *domain.OutboxEvent) bool { return e.LastError != nil && *e.LastError == domain.ReasonNoWorker }
+	for _, e := range s.outbox {
+		if e.JobID == id && e.Published && !noWorker(e) && e.CreatedAt.After(after) {
+			after = e.CreatedAt
+		}
+	}
+	waitingSince := now
+	for _, e := range s.outbox {
+		if e.JobID == id && noWorker(e) && e.CreatedAt.After(after) && e.CreatedAt.Before(waitingSince) {
+			waitingSince = e.CreatedAt
 		}
 	}
 	j.DispatchedAt = nil
 	j.FencingToken++
 	j.UpdatedAt = now
-	if !readySince.After(now.Add(-maxWait)) {
+	if !waitingSince.After(now.Add(-maxWait)) {
 		j.Status, j.NextRetryAt = domain.StatusDead, nil
 		return true, nil
 	}

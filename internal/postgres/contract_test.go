@@ -895,7 +895,9 @@ func TestLive_NoWorkerDefersThenDies(t *testing.T) {
 	s := service.NewScheduler(r.Jobs, r.Tenants, r.Events, r.Outbox, r.Tx, liveUnroutableBroker{}, nil)
 	s.ReconcileThreshold = 0
 	s.NoWorkerRetry = 200 * time.Millisecond
-	job, err := s.SubmitJob(ctx, service.SubmitInput{TenantID: tn.ID, Name: "no-such-worker", Payload: json.RawMessage(`{}`), MaxAttempts: 3})
+	s.NoWorkerTimeout = time.Hour
+	// Scheduled long ago: only time since the first refusal may count.
+	job, err := s.SubmitJob(ctx, service.SubmitInput{TenantID: tn.ID, Name: "no-such-worker", Payload: json.RawMessage(`{}`), MaxAttempts: 3, ScheduledAt: time.Now().Add(-48 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}

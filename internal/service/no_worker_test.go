@@ -87,3 +87,29 @@ func TestNoWorker_DefersWithoutRetryBudgetThenDies(t *testing.T) {
 		t.Fatalf("dependent of a no-worker job is %s", dep.Status)
 	}
 }
+
+// Time a job spent blocked (here: scheduled long ago) must not count toward
+// NoWorkerTimeout; only time since its first refused announcement does.
+func TestNoWorker_TimeoutStartsAtFirstRefusal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := memory.NewBundle()
+	s := NewScheduler(b.Jobs, b.Tenants, b.Events, b.Outbox, b.Tx, &unroutableBroker{}, nil)
+	s.ReconcileThreshold = 0
+	s.NoWorkerTimeout = time.Hour
+	tn, _ := domain.NewTenant("acme", "k")
+	_ = b.Tenants.Create(ctx, tn)
+	job, err := s.SubmitJob(ctx, SubmitInput{TenantID: tn.ID, Name: "late", Payload: json.RawMessage(`{}`), MaxAttempts: 3, ScheduledAt: time.Now().Add(-48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DispatchReady(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReconcileOutbox(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Jobs.GetByID(ctx, job.ID); got.Status != domain.StatusPending || got.NextRetryAt == nil {
+		t.Fatalf("first refusal must defer, not kill: %+v", got)
+	}
+}

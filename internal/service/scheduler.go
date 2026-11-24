@@ -41,8 +41,8 @@ type Scheduler struct {
 	// NoWorkerRetry is how long a job whose job name has no worker queue waits
 	// before it is dispatched again (default 1m).
 	NoWorkerRetry time.Duration
-	// NoWorkerTimeout is how long such a job may stay ready before it goes dead
-	// with ReasonNoWorker (default 24h).
+	// NoWorkerTimeout is how long such a job's announcements may keep being
+	// refused before it goes dead with ReasonNoWorker (default 24h).
 	NoWorkerTimeout time.Duration
 	TenantQuota     int
 	TenantRate      int
