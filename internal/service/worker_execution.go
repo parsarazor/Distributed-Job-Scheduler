@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,7 +56,7 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 		return false, err
 	}
 	span.SetAttributes(attribute.String("job.id", job.ID.String()), attribute.String("tenant.id", job.TenantID.String()), attribute.Int64("job.fencing_token", token))
-	slog.Info("job started", "job_id", job.ID, "tenant_id", job.TenantID, "worker_id", w.id, "attempt", job.AttemptCount+1)
+	w.logger.Info("job started", "job_id", job.ID, "tenant_id", job.TenantID, "worker_id", w.id, "attempt", job.AttemptCount+1)
 
 	jobCtx, cancel := context.WithCancelCause(base)
 	defer cancel(nil)
@@ -95,7 +95,7 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 
 	started := time.Now()
 	attempt := job.AttemptCount
-	runErr := invokeHandler(jobCtx, h, job)
+	runErr := w.invokeHandler(jobCtx, h, job)
 	a.handlerDone.Store(true)
 	telemetry.Latency.Observe(time.Since(started).Seconds())
 
@@ -111,28 +111,29 @@ func (w *Worker) execute(ctx context.Context, announcement *domain.Job) (bool, e
 	if cause := context.Cause(jobCtx); cause != nil {
 		runErr = cause
 	}
-	final, msg, kind := handlerResult(runErr)
+	final, msg, kind, nonRetryable := handlerResult(runErr)
 	a.gate.Release(1)
 	if runErr != nil {
 		telemetry.HandlerErrors.WithLabelValues(kind).Inc()
 		span.RecordError(errors.New(msg))
 		span.SetStatus(codes.Error, msg)
-		slog.Warn("job handler failed", "job_id", job.ID, "worker_id", w.id, "kind", kind)
+		w.logger.Warn("job handler failed", "job_id", job.ID, "worker_id", w.id, "kind", kind)
 	}
-	err = w.complete(completionCtx, a, attempt, final, msg)
+	err = w.complete(completionCtx, a, attempt, final, msg, nonRetryable)
 	if errors.Is(err, domain.ErrLeaseLost) || errors.Is(err, domain.ErrFencingTokenStale) {
 		telemetry.LeaseLosses.Inc()
-		slog.Warn("job lease lost", "worker_id", w.id, "job_id", job.ID)
+		w.logger.Warn("job lease lost", "worker_id", w.id, "job_id", job.ID)
 	}
 	return true, err
 }
 
-func invokeHandler(ctx context.Context, h Handler, job *domain.Job) (err error) {
+func (w *Worker) invokeHandler(ctx context.Context, h Handler, job *domain.Job) (err error) {
 	defer func() {
 		if recover() != nil {
 			// Never format a panic value: Error/String methods can panic again,
 			// and user values can contain payloads, credentials or personal data.
 			err = errHandlerPanic
+			w.logger.Error("job handler panicked", "job_id", job.ID, "worker_id", w.id, "stack", string(debug.Stack()))
 		}
 	}()
 	if err := ctx.Err(); err != nil {
@@ -144,30 +145,32 @@ func invokeHandler(ctx context.Context, h Handler, job *domain.Job) (err error) 
 	return h(ctx, job)
 }
 
-func handlerResult(err error) (final domain.JobStatus, message, kind string) {
+func handlerResult(err error) (final domain.JobStatus, message, kind string, nonRetryable bool) {
 	defer func() {
 		if recover() != nil {
-			final, message, kind = domain.StatusFailed, "handler failed", "error"
+			final, message, kind, nonRetryable = domain.StatusFailed, "handler failed", "error", false
 		}
 	}()
 	if err == nil {
-		return domain.StatusSucceeded, "", ""
+		return domain.StatusSucceeded, "", "", false
 	}
 	switch {
 	case errors.Is(err, errHandlerPanic):
-		return domain.StatusFailed, "handler panicked", "panic"
+		return domain.StatusFailed, "handler panicked", "panic", false
 	case errors.Is(err, context.DeadlineExceeded):
-		return domain.StatusFailed, "handler timed out", "timeout"
+		return domain.StatusFailed, "handler timed out", "timeout", false
 	case errors.Is(err, context.Canceled):
-		return domain.StatusFailed, "handler canceled", "canceled"
+		return domain.StatusFailed, "handler canceled", "canceled", false
 	case errors.Is(err, errNoHandler):
-		return domain.StatusFailed, domain.ReasonHandlerNotRegistered, "error"
+		return domain.StatusFailed, domain.ReasonHandlerNotRegistered, "error", true
+	case errors.Is(err, domain.ErrPermanentFailure):
+		return domain.StatusFailed, domain.ReasonPermanentFailure, "permanent", true
 	default:
-		return domain.StatusFailed, "handler failed", "error"
+		return domain.StatusFailed, "handler failed", "error", false
 	}
 }
 
-func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final domain.JobStatus, msg string) error {
+func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final domain.JobStatus, msg string, nonRetryable bool) error {
 	var lastErr error
 	for tries := 0; ; tries++ {
 		if err := a.gate.Acquire(ctx, 1); err != nil {
@@ -200,7 +203,7 @@ func (w *Worker) complete(ctx context.Context, a *activeJob, attempt int, final 
 			return domain.ErrLeaseLost
 		}
 		opCtx, cancel := context.WithTimeout(ctx, max(min(w.leaseTTL/3, time.Second), time.Millisecond))
-		lastErr = w.ctl.ReportCompletion(opCtx, a.info.JobID, w.id, final, a.info.FencingToken, msg)
+		lastErr = w.ctl.ReportCompletion(opCtx, a.info.JobID, w.id, final, a.info.FencingToken, msg, nonRetryable)
 		cancel()
 		if lastErr == nil {
 			a.finished = true
@@ -273,7 +276,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *activeJob) {
 				// Transient failure: retry well before the local deadline.
 				next = max(interval/4, time.Millisecond)
 				if ctx.Err() == nil {
-					slog.Warn("renew job lease failed", "worker_id", w.id, "job_id", a.info.JobID)
+					w.logger.Warn("renew job lease failed", "worker_id", w.id, "job_id", a.info.JobID)
 				}
 			}
 		}
@@ -346,6 +349,6 @@ func (w *Worker) CancelExecution(ctx context.Context, jobID uuid.UUID, token int
 	if a.completing || a.finished || a.leaseLost || a.ctx.Err() != nil {
 		return false
 	}
-	a.cancel(context.Canceled)
+	a.cancel(domain.ErrExecutionCanceled)
 	return true
 }

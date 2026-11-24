@@ -271,7 +271,7 @@ func (s *SchedulerServer) ReportJobCompletion(ctx context.Context, req *apiv1.Re
 			message = "handler failed"
 		}
 	}
-	n, err := s.sched.ReportCompletion(ctx, id, req.WorkerId, ProtoToDomainStatus(req.FinalStatus), req.FencingToken, message)
+	n, err := s.sched.ReportCompletionWith(ctx, id, req.WorkerId, ProtoToDomainStatus(req.FinalStatus), req.FencingToken, message, req.NonRetryable)
 	if err != nil {
 		return nil, toGRPCError(err)
 	}

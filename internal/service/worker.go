@@ -38,6 +38,7 @@ type Worker struct {
 	intakeCancel   context.CancelFunc
 	lifetime       context.Context
 	stop           context.CancelCauseFunc
+	logger         *slog.Logger
 }
 
 type activeJob struct {
@@ -95,6 +96,14 @@ func newWorker(id string, sched *Scheduler, ctl JobControl, maxConcurrency int64
 		jobTimeout:     5 * time.Minute,
 		completionWait: DefaultCompletionWindow,
 		lifetime:       lifetime, stop: stop,
+		logger: slog.Default(),
+	}
+}
+
+// SetLogger directs the worker's execution logs. Configure before use.
+func (w *Worker) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		w.logger = logger
 	}
 }
 
@@ -135,7 +144,7 @@ func (w *Worker) SetIntakeCancel(cancel context.CancelFunc) {
 // Handlers must cooperate with cancellation; a process may bound Wait separately.
 func (w *Worker) CancelAll() {
 	w.Drain()
-	w.stop(context.Canceled)
+	w.stop(domain.ErrWorkerShutdown)
 }
 
 // Wait drains admitted executions, including work still acquiring its DB claim.
@@ -230,7 +239,7 @@ func (w *Worker) StartExecution(ctx context.Context, job *domain.Job) bool {
 	go func() {
 		defer w.sem.Release(1)
 		if _, err := w.execute(ctx, job); err != nil {
-			slog.Error("execute job", "worker_id", w.id, "job_id", job.ID, "tenant_id", job.TenantID, "error", err)
+			w.logger.Error("execute job", "worker_id", w.id, "job_id", job.ID, "tenant_id", job.TenantID, "error", err)
 		}
 	}()
 	return true

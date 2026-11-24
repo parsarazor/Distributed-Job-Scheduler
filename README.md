@@ -39,11 +39,10 @@ go run ./cmd/demo
 
 This runs the whole lifecycle in-process: submit parent + child, check the dependency gate, dispatch, complete, unlock the child, run a worker pass, reconcile the outbox. Takes a second and prints each step.
 
-Scheduler + worker separately (still in-memory; each process has its own state, so this is useful for local wiring but not for shared job execution):
+Scheduler alone, in memory (workers need a scheduler with shared state, so run them against the Compose stack):
 
 ```bash
 APP_ENV=development STORAGE=memory DEMO_SEED=true go run ./cmd/scheduler
-APP_ENV=development STORAGE=memory go run ./cmd/worker
 ```
 
 Full setup with Docker:
@@ -83,6 +82,30 @@ schedctl tenant rotate-key -id <tenant-id>               # old key stops working
 ```
 
 Only the SHA-256 of each API key is stored, so a lost key is replaced by rotating it. Disabling blocks the tenant's key on every replica at once. Jobs already accepted keep running, so cancel them first if they must stop.
+
+## Writing handlers (`pkg/worker`)
+
+Workers are built with the public SDK `github.com/parsarazor/distributed-job-scheduler/pkg/worker`. `cmd/worker` is this SDK plus the admin-only worker port and the operations server.
+
+```go
+cfg, err := worker.ConfigFromEnv() // or build worker.Config directly
+w, err := worker.New(cfg)
+w.HandleFunc("send-invoice", func(ctx context.Context, job *worker.Job) error {
+    var in struct{ OrderID string }
+    if err := job.Decode(&in); err != nil {
+        return worker.Permanent(err) // dead now, no retries
+    }
+    return sendInvoice(ctx, job.ID, in.OrderID) // job.ID is the dedup key
+})
+err = w.Run(ctx) // nil after a clean drain when ctx is cancelled
+```
+
+- **Results:** `nil` succeeds. `worker.Permanent(err)` dead-letters at once. Any other error, or a panic (its stack trace goes to `Config.Logger`), is retried with backoff until `MaxAttempts`.
+- **Cancellation:** the handler's `ctx` ends on timeout, lease loss, an operator `CancelExecution`, or when `ShutdownTimeout` runs out. `context.Cause(ctx)` is `context.DeadlineExceeded`, `worker.ErrLeaseLost`, `worker.ErrCanceled` or `worker.ErrShutdown`.
+- **Run:** returns `nil` after a clean drain, or an error on startup failure, unexpected intake loss, or when `ShutdownTimeout` expires with handlers still running. `Ready()` backs readiness probes.
+- **Transport:** `Config.TLS` secures gRPC to the scheduler (system roots when nil). RabbitMQ TLS comes from the `amqps://` URL. Plaintext gRPC and `amqp://` need `Insecure: true`, which `ConfigFromEnv` sets only for `APP_ENV=development` without `SCHEDULER_CA_FILE`.
+- **Boundary:** the SDK has no database driver or storage code; a test enforces this with `go list -deps`.
+- **Example:** [`examples/sendemail`](examples/sendemail) is the `send-email` handler `cmd/worker` registers in development.
 
 ## Worker credentials
 
@@ -130,6 +153,7 @@ Everything is env vars, see `internal/app/app.go`:
 | `DISPATCH_INTERVAL` | Fallback dispatch interval; submissions and completions also trigger dispatch immediately | 2s |
 | `LEASE_RESTART_GRACE` | On scheduler startup, extend lapsed running leases by this much so workers can renew them or report results they could not deliver during the outage | 30s |
 | `COMPLETION_RETRY_WINDOW` | How long a worker keeps retrying a finished job's result while the scheduler is unreachable | 1m |
+| `SHUTDOWN_TIMEOUT` | Worker only; how long shutdown waits for running handlers before cancelling them | 20s |
 | `JOB_TIMEOUT` | Worker execution time cap; `timeout_ms` can request a shorter deadline | 5m |
 | `APP_ENV` | `development` explicitly permits local credentials and plaintext gRPC | production behavior |
 | `WORKER_TOKEN` | Bearer credential for `Execute`/`Heartbeat`/`ReportJobCompletion`; at least 32 visible ASCII characters in production | — |
@@ -160,7 +184,9 @@ RabbitMQ data directories depend on the node name. For an existing volume, set `
 
 ```
 cmd/scheduler/   - gRPC server + dispatch / retry / reconcile / reaper loops
-cmd/worker/      - gRPC server + bounded execution loop
+cmd/worker/      - pkg/worker + admin worker port + operations server
+pkg/worker/      - public handler SDK
+examples/        - example handlers
 cmd/demo/        - in-process end-to-end demo
 internal/domain/ - job, tenant, state machine, backoff (no deps, easy to test)
 internal/service/- scheduler + worker logic

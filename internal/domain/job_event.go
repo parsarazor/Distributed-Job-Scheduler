@@ -11,13 +11,16 @@ import (
 
 // SafeHandlerMessages are the fixed execution outcomes allowed in audit output.
 func SafeHandlerMessages() []string {
-	return []string{"handler failed", "handler panicked", "handler canceled", "handler timed out", "handler not registered"}
+	return []string{"handler failed", "handler panicked", "handler canceled", "handler timed out", "handler not registered", ReasonPermanentFailure}
 }
 
 // ReasonHandlerNotRegistered is both a safe handler message and the
 // non-retryable signal: ReportCompletion dead-letters a job whose failure
 // reason is this instead of consuming its retry budget.
 const ReasonHandlerNotRegistered = "handler not registered"
+
+// ReasonPermanentFailure records a handler failure the worker reported as non-retryable.
+const ReasonPermanentFailure = "handler failed permanently"
 
 func SafeHandlerMessage(message string) string {
 	for _, safe := range SafeHandlerMessages() {

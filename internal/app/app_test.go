@@ -143,29 +143,6 @@ func TestWakeLoop_RunsOnWakeBeforeTick(t *testing.T) {
 	wg.Wait()
 }
 
-func TestNewWorkerFromEnv_RequiresSchedulerAndRejectsDatabase(t *testing.T) {
-	for name, env := range map[string]map[string]string{
-		"database credentials": {"DATABASE_URL": "postgres://scheduler:scheduler@db/scheduler", "SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/"},
-		"no scheduler":         {"RABBITMQ_URL": "amqp://u:p@q/"},
-		"no broker":            {"SCHEDULER_ADDR": "scheduler:50051"},
-		"lease too long":       {"SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/", "LEASE_TTL": "11m"},
-		"lease too short":      {"SCHEDULER_ADDR": "scheduler:50051", "RABBITMQ_URL": "amqp://u:p@q/", "LEASE_TTL": "100us"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("APP_ENV", "development")
-			t.Setenv("STORAGE", "")
-			t.Setenv("WORKER_TOKEN", "local-development-worker-token-change-me")
-			for _, key := range []string{"DATABASE_URL", "SCHEDULER_ADDR", "RABBITMQ_URL", "LEASE_TTL"} {
-				t.Setenv(key, env[key])
-			}
-			if deps, err := NewWorkerFromEnv(context.Background()); err == nil {
-				deps.Cleanup()
-				t.Fatal("worker started without the scheduler-only boundary")
-			}
-		})
-	}
-}
-
 func TestWorkerIDMustBeAStrictIdentifier(t *testing.T) {
 	for _, id := range []string{"edge 1", "edge\t1", "edge:1", "édge"} {
 		t.Run(id, func(t *testing.T) {
@@ -176,13 +153,6 @@ func TestWorkerIDMustBeAStrictIdentifier(t *testing.T) {
 			t.Setenv("WORKER_ID", id)
 			if _, err := NewFromEnv(context.Background()); err == nil || !strings.Contains(err.Error(), "WORKER_ID") {
 				t.Fatalf("scheduler accepted WORKER_ID %q: %v", id, err)
-			}
-			t.Setenv("STORAGE", "")
-			t.Setenv("WORKER_TOKEN", "local-development-worker-token-change-me")
-			t.Setenv("SCHEDULER_ADDR", "scheduler:50051")
-			t.Setenv("RABBITMQ_URL", "amqp://u:p@q/")
-			if _, err := NewWorkerFromEnv(context.Background()); err == nil || !strings.Contains(err.Error(), "WORKER_ID") {
-				t.Fatalf("worker accepted WORKER_ID %q: %v", id, err)
 			}
 		})
 	}

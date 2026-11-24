@@ -1,10 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -298,4 +303,65 @@ func TestRemoteWorker_RevokedCredentialRequeuesDelivery(t *testing.T) {
 	if runs.Load() != 0 || stored.Status != domain.StatusPending || stored.LeaseOwner != nil {
 		t.Fatalf("revoked worker touched the job: runs=%d job=%+v", runs.Load(), stored)
 	}
+}
+
+func TestRemoteWorker_PermanentFailureDeadLettersWithoutRetry(t *testing.T) {
+	t.Parallel()
+	s, w := newRemotePair(t, workerTestKey, 30*time.Second)
+	var runs atomic.Int32
+	w.RegisterHandler("charge", func(context.Context, *domain.Job) error {
+		runs.Add(1)
+		return fmt.Errorf("card declined: %w", domain.ErrPermanentFailure)
+	})
+	job, payload := submitAndAnnounce(t, s, "charge", `{}`)
+	if err := w.HandleMessage(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.StatusDead || stored.AttemptCount != 1 || runs.Load() != 1 {
+		t.Fatalf("permanent failure used retries: status=%s attempts=%d runs=%d", stored.Status, stored.AttemptCount, runs.Load())
+	}
+}
+
+func TestRemoteWorker_PanicLogsStackAndRetries(t *testing.T) {
+	t.Parallel()
+	s, w := newRemotePair(t, workerTestKey, 30*time.Second)
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	w.SetLogger(slog.New(slog.NewJSONHandler(&lockedWriter{w: &logs, mu: &mu}, nil)))
+	w.RegisterHandler("fraud", func(context.Context, *domain.Job) error { panic("secret payload value") })
+	job, payload := submitAndAnnounce(t, s, "fraud", `{}`)
+	if err := w.HandleMessage(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.StatusPending || stored.AttemptCount != 1 {
+		t.Fatalf("panic must be retried: status=%s attempts=%d", stored.Status, stored.AttemptCount)
+	}
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	if !strings.Contains(out, "job handler panicked") || !strings.Contains(out, "goroutine") {
+		t.Fatalf("panic stack not logged: %s", out)
+	}
+	if strings.Contains(out, "secret payload value") {
+		t.Fatal("panic value must not be logged")
+	}
+}
+
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }

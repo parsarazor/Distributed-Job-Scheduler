@@ -1572,12 +1572,15 @@ func (x *GetJobEventsResponse) GetHasMore() bool {
 }
 
 type ReportJobCompletionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	FinalStatus   JobStatus              `protobuf:"varint,3,opt,name=final_status,json=finalStatus,proto3,enum=v1.JobStatus" json:"final_status,omitempty"`
-	FencingToken  int64                  `protobuf:"varint,4,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	JobId        string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId     string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	FinalStatus  JobStatus              `protobuf:"varint,3,opt,name=final_status,json=finalStatus,proto3,enum=v1.JobStatus" json:"final_status,omitempty"`
+	FencingToken int64                  `protobuf:"varint,4,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	ErrorMessage string                 `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// non_retryable dead-letters a FAILED job now instead of using its
+	// remaining retry budget. It is ignored for other statuses.
+	NonRetryable  bool `protobuf:"varint,6,opt,name=non_retryable,json=nonRetryable,proto3" json:"non_retryable,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1645,6 +1648,13 @@ func (x *ReportJobCompletionRequest) GetErrorMessage() string {
 		return x.ErrorMessage
 	}
 	return ""
+}
+
+func (x *ReportJobCompletionRequest) GetNonRetryable() bool {
+	if x != nil {
+		return x.NonRetryable
+	}
+	return false
 }
 
 type ReportJobCompletionResponse struct {
@@ -2349,13 +2359,14 @@ const file_proto_v1_scheduler_proto_rawDesc = "" +
 	"\x06events\x18\x01 \x03(\v2\f.v1.JobEventR\x06events\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\x05R\n" +
 	"nextOffset\x12\x19\n" +
-	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"\xcc\x01\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"\xf1\x01\n" +
 	"\x1aReportJobCompletionRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x120\n" +
 	"\ffinal_status\x18\x03 \x01(\x0e2\r.v1.JobStatusR\vfinalStatus\x12#\n" +
 	"\rfencing_token\x18\x04 \x01(\x03R\ffencingToken\x12#\n" +
-	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\"r\n" +
+	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12#\n" +
+	"\rnon_retryable\x18\x06 \x01(\bR\fnonRetryable\"r\n" +
 	"\x1bReportJobCompletionResponse\x12\"\n" +
 	"\facknowledged\x18\x01 \x01(\bR\facknowledged\x12/\n" +
 	"\x13dependents_unlocked\x18\x02 \x01(\x05R\x12dependentsUnlocked\"0\n" +

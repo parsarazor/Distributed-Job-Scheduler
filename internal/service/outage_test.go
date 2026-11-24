@@ -35,11 +35,11 @@ func (c *outageControl) RenewLease(ctx context.Context, id uuid.UUID, worker str
 	return c.JobControl.RenewLease(ctx, id, worker, token, ttl)
 }
 
-func (c *outageControl) ReportCompletion(ctx context.Context, id uuid.UUID, worker string, final domain.JobStatus, token int64, msg string) error {
+func (c *outageControl) ReportCompletion(ctx context.Context, id uuid.UUID, worker string, final domain.JobStatus, token int64, msg string, nonRetryable bool) error {
 	if c.down.Load() {
 		return c.unavailable()
 	}
-	return c.JobControl.ReportCompletion(ctx, id, worker, final, token, msg)
+	return c.JobControl.ReportCompletion(ctx, id, worker, final, token, msg, nonRetryable)
 }
 
 func (c *outageControl) GetExecutionJob(ctx context.Context, id uuid.UUID, worker string, token int64) (*domain.Job, error) {
