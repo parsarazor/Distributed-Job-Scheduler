@@ -234,3 +234,25 @@ func TestOperationsShutdownCancelsOwnedSampler(t *testing.T) {
 		t.Fatal("sampler still running after shutdown")
 	}
 }
+
+type metadataStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s metadataStream) Context() context.Context { return s.ctx }
+
+// A retired shared token, or a worker's own scheduler credential on its
+// admin-only port, must not occupy health watch slots.
+func TestHealthWatchRejectsRetiredSharedToken(t *testing.T) {
+	health := newRuntimeHealth(testService, serverConfig{workerToken: "retired-shared", adminToken: "admin", noSharedWorkerToken: true})
+	info := &grpc.StreamServerInfo{FullMethod: healthpb.Health_Watch_FullMethodName}
+	for token, want := range map[string]codes.Code{"retired-shared": codes.PermissionDenied, "admin": codes.Unavailable} {
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "Bearer "+token))
+		health.Shutdown()
+		err := health.watchInterceptor(nil, metadataStream{ctx: ctx}, info, func(any, grpc.ServerStream) error { return nil })
+		if status.Code(err) != want {
+			t.Fatalf("token %q: err=%v, want %v", token, err, want)
+		}
+	}
+}

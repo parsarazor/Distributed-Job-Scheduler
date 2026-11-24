@@ -126,7 +126,11 @@ func NewWorkerFromEnv(ctx context.Context) (*Deps, error) {
 	worker := service.NewRemoteWorker(workerID, control, limits.maxConcurrency, limits.leaseTTL)
 	worker.SetJobTimeout(limits.jobTimeout)
 	worker.SetCompletionWindow(limits.completionWindow)
-	return &Deps{Worker: worker, Broker: rb, Cleanup: cleanup, checkSchema: schedulerReady, serverConfig: &cfg}, nil
+	// The worker port is admin-only: its own scheduler credential, which the
+	// scheduler may revoke, must not authorize anything there.
+	portCfg := cfg
+	portCfg.noSharedWorkerToken = true
+	return &Deps{Worker: worker, Broker: rb, Cleanup: cleanup, checkSchema: schedulerReady, serverConfig: &portCfg}, nil
 }
 
 // schedulerTransport uses TLS (system roots or SCHEDULER_CA_FILE) everywhere

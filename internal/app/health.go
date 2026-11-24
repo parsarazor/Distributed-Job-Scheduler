@@ -38,7 +38,7 @@ type RuntimeHealth struct {
 
 func newRuntimeHealth(name string, cfg serverConfig) *RuntimeHealth {
 	return &RuntimeHealth{
-		name: name, workerToken: cfg.workerToken, adminToken: cfg.adminToken,
+		name: name, workerToken: cfg.sharedWorkerToken(), adminToken: cfg.adminToken,
 		watches: make(chan struct{}, maxHealthWatches), stopped: make(chan struct{}), changed: make(chan struct{}),
 	}
 }
