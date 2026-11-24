@@ -249,7 +249,16 @@ func (s *Scheduler) RequeueDead(ctx context.Context, id uuid.UUID) (*domain.Job,
 		if err != nil {
 			return err
 		}
-		return s.recordTransition(ctx, id, domain.StatusDead, domain.StatusPending, "", "operator requeue")
+		// Use the database clock, like the outbox rows that
+		// TerminalizeOutboxExhausted compares against this event.
+		now, err := s.jobs.Now(ctx)
+		if err != nil {
+			return err
+		}
+		return s.events.Record(ctx, &domain.JobEvent{
+			ID: uuid.New(), JobID: id, FromStatus: domain.StatusDead, ToStatus: domain.StatusPending,
+			OccurredAt: now, ErrorMessage: strptr("operator requeue"),
+		})
 	})
 	return job, err
 }

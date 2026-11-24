@@ -855,7 +855,11 @@ func TestLive_RequeueDeadResetsOutboxDeadLetterBudget(t *testing.T) {
 	if _, err := r.Jobs.RequeueDead(ctx, job.ID); err != nil {
 		t.Fatalf("requeue: %v", err)
 	}
-	if err := r.Events.Record(ctx, &domain.JobEvent{ID: uuid.New(), JobID: job.ID, FromStatus: domain.StatusDead, ToStatus: domain.StatusPending, OccurredAt: time.Now().UTC()}); err != nil {
+	requeuedAt, err := r.Jobs.Now(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Events.Record(ctx, &domain.JobEvent{ID: uuid.New(), JobID: job.ID, FromStatus: domain.StatusDead, ToStatus: domain.StatusPending, OccurredAt: requeuedAt}); err != nil {
 		t.Fatalf("record requeue: %v", err)
 	}
 	if ids, err := r.Jobs.TerminalizeOutboxExhausted(ctx, 10, domain.MaxDeadLetteredDispatches); err != nil || slices.Contains(ids, job.ID) {
