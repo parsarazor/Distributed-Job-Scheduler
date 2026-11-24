@@ -157,14 +157,15 @@ func handlerResult(err error) (final domain.JobStatus, message, kind string, non
 	switch {
 	case errors.Is(err, errHandlerPanic):
 		return domain.StatusFailed, "handler panicked", "panic", false
+	case errors.Is(err, domain.ErrPermanentFailure):
+		// A live job context: an ended one replaced err with its cause.
+		return domain.StatusFailed, domain.ReasonPermanentFailure, "permanent", true
 	case errors.Is(err, context.DeadlineExceeded):
 		return domain.StatusFailed, "handler timed out", "timeout", false
 	case errors.Is(err, context.Canceled):
 		return domain.StatusFailed, "handler canceled", "canceled", false
 	case errors.Is(err, errNoHandler):
 		return domain.StatusFailed, domain.ReasonHandlerNotRegistered, "error", true
-	case errors.Is(err, domain.ErrPermanentFailure):
-		return domain.StatusFailed, domain.ReasonPermanentFailure, "permanent", true
 	default:
 		return domain.StatusFailed, "handler failed", "error", false
 	}

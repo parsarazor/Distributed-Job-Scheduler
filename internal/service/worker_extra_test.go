@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -339,5 +340,14 @@ func TestWorker_RegisterHandlerOverwrite(t *testing.T) {
 	w.handlers["h"](context.Background(), &domain.Job{})
 	if called != "v2" {
 		t.Fatalf("last registration must win, called=%q", called)
+	}
+}
+
+func TestHandlerResult_PermanentWinsOverWrappedContextErrors(t *testing.T) {
+	for _, inner := range []error{context.DeadlineExceeded, context.Canceled} {
+		err := fmt.Errorf("%w: %w", domain.ErrPermanentFailure, inner)
+		if _, _, kind, nonRetryable := handlerResult(err); kind != "permanent" || !nonRetryable {
+			t.Fatalf("permanent %v classified as %s", inner, kind)
+		}
 	}
 }
