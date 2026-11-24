@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/telemetry"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

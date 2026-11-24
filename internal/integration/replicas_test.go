@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/postgres"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/testinfra"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/postgres"
+	"github.com/parsarazor/distributed-job-scheduler/internal/service"
+	"github.com/parsarazor/distributed-job-scheduler/internal/testinfra"
 )
 
 // Two replicas with separate pools run every background loop at once while

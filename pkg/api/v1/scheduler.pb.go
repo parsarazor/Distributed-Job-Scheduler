@@ -2416,7 +2416,7 @@ const file_proto_v1_scheduler_proto_rawDesc = "" +
 	"\x0fRotateTenantKey\x12\x1a.v1.RotateTenantKeyRequest\x1a\x1b.v1.RotateTenantKeyResponse\x12_\n" +
 	"\x16CreateWorkerCredential\x12!.v1.CreateWorkerCredentialRequest\x1a\".v1.CreateWorkerCredentialResponse\x12\\\n" +
 	"\x15ListWorkerCredentials\x12 .v1.ListWorkerCredentialsRequest\x1a!.v1.ListWorkerCredentialsResponse\x12_\n" +
-	"\x16RevokeWorkerCredential\x12!.v1.RevokeWorkerCredentialRequest\x1a\".v1.RevokeWorkerCredentialResponseBAZ?github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
+	"\x16RevokeWorkerCredential\x12!.v1.RevokeWorkerCredentialRequest\x1a\".v1.RevokeWorkerCredentialResponseB?Z=github.com/parsarazor/distributed-job-scheduler/pkg/api/v1;v1b\x06proto3"
 
 var (
 	file_proto_v1_scheduler_proto_rawDescOnce sync.Once

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/postgres"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/testinfra"
+	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/postgres"
+	"github.com/parsarazor/distributed-job-scheduler/internal/repository"
+	"github.com/parsarazor/distributed-job-scheduler/internal/service"
+	"github.com/parsarazor/distributed-job-scheduler/internal/testinfra"
 )
 
 type fixture struct {

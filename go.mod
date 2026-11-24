@@ -1,4 +1,4 @@
-module github.com/prsamohamadi/distributed-job-scheduler
+module github.com/parsarazor/distributed-job-scheduler
 
 go 1.26.11
 

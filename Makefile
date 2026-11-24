@@ -19,8 +19,8 @@ proto-tools:
 proto:
 	@test "$$(protoc --version)" = "libprotoc 35.1" || { printf '%s\n' 'Install protoc 35.1 to regenerate protobufs.'; exit 1; }
 	export PATH="$$PATH:$$(go env GOPATH)/bin" && \
-	protoc -I. --go_out=. --go_opt=module=github.com/prsamohamadi/distributed-job-scheduler \
-	  --go-grpc_out=. --go-grpc_opt=module=github.com/prsamohamadi/distributed-job-scheduler \
+	protoc -I. --go_out=. --go_opt=module=github.com/parsarazor/distributed-job-scheduler \
+	  --go-grpc_out=. --go-grpc_opt=module=github.com/parsarazor/distributed-job-scheduler \
 	  proto/v1/job.proto proto/v1/scheduler.proto proto/v1/worker.proto
 
 migrate:

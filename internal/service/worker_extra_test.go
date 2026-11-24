@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
-	apiv1 "github.com/prsamohamadi/distributed-job-scheduler/pkg/api/v1"
+	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/memory"
+	"github.com/parsarazor/distributed-job-scheduler/internal/repository"
+	apiv1 "github.com/parsarazor/distributed-job-scheduler/pkg/api/v1"
 )
 
 func listAll() repository.JobListFilter { return repository.JobListFilter{} }

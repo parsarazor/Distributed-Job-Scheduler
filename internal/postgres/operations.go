@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/repository"
 )
 
 func (p *Pool) Stats(ctx context.Context) (repository.Stats, error) {

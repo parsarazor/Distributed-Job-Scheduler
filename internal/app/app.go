@@ -8,12 +8,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/broker"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/memory"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/postgres"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/repository"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
+	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/memory"
+	"github.com/parsarazor/distributed-job-scheduler/internal/postgres"
+	"github.com/parsarazor/distributed-job-scheduler/internal/repository"
+	"github.com/parsarazor/distributed-job-scheduler/internal/service"
 )
 
 // Deps bundles everything a binary needs.

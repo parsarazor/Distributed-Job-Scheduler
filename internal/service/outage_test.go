@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

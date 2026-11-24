@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/parsarazor/distributed-job-scheduler/internal/service"
+	"github.com/parsarazor/distributed-job-scheduler/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/service"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"

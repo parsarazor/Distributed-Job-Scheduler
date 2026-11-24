@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/prsamohamadi/distributed-job-scheduler/internal/domain"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 )
 
 // WorkerCredentialRepo implements repository.WorkerCredentialRepository.
