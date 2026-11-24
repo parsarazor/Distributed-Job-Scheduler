@@ -119,6 +119,9 @@ func TestLive_JobFencingRoundTrip(t *testing.T) {
 	if claimed.Status != domain.StatusRunning || claimed.FencingToken != 1 || claimed.LeaseOwner == nil || *claimed.LeaseOwner != owners[0] || claimed.LeaseExpiresAt == nil {
 		t.Fatalf("winning claim must atomically persist its token, owner and lease: %+v", claimed)
 	}
+	if claimed.LastLeaseOwner == nil || *claimed.LastLeaseOwner != owners[0] {
+		t.Fatalf("claim must record the last lease owner: %+v", claimed.LastLeaseOwner)
+	}
 	for _, token := range []int64{tokens[0] - 1, tokens[0] + 1} {
 		if _, err := r.Jobs.CompleteLease(ctx, job.ID, owners[0], token, domain.StatusSucceeded); err != domain.ErrFencingTokenStale {
 			t.Fatalf("completion with token %d must fail, got %v", token, err)
@@ -151,6 +154,9 @@ func TestLive_JobFencingRoundTrip(t *testing.T) {
 	completed, err := r.Jobs.GetByID(ctx, job.ID)
 	if err != nil || completed.Status != domain.StatusSucceeded || completed.LeaseOwner != nil || completed.LeaseExpiresAt != nil {
 		t.Fatalf("completion must clear lease: job=%+v err=%v", completed, err)
+	}
+	if completed.LastLeaseOwner == nil || *completed.LastLeaseOwner != owners[0] {
+		t.Fatalf("completion must keep the last lease owner for idempotent confirmation: %+v", completed.LastLeaseOwner)
 	}
 }
 

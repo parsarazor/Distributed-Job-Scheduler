@@ -52,7 +52,7 @@ func (p *Pool) Close() { p.pool.Close() }
 // Ping verifies connectivity.
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
-const SchemaVersion = 21
+const SchemaVersion = 22
 
 // CheckSchema rejects missing, partially applied or incompatible migrations.
 func (p *Pool) CheckSchema(ctx context.Context) error {
@@ -141,7 +141,7 @@ func scanJob(row pgx.Row, prefix ...any) (*domain.Job, error) {
 		&j.ID, &j.TenantID, &j.Name, &j.Status, &payload,
 		&j.Priority, &j.AttemptCount, &j.MaxAttempts, &dependsOn,
 		&j.FencingToken, &j.ScheduledAt, &nextRetry, &j.CreatedAt, &j.UpdatedAt,
-		&j.LeaseOwner, &j.LeaseExpiresAt, &j.DispatchedAt, &j.SubmissionKey, &j.Timeout, &j.TraceParent, &j.TraceState, &j.SubmissionHash, &j.PayloadExpired,
+		&j.LeaseOwner, &j.LeaseExpiresAt, &j.DispatchedAt, &j.SubmissionKey, &j.Timeout, &j.TraceParent, &j.TraceState, &j.SubmissionHash, &j.PayloadExpired, &j.LastLeaseOwner,
 	)...); err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func scanJob(row pgx.Row, prefix ...any) (*domain.Job, error) {
 	return &j, nil
 }
 
-const jobColumnsTail = `, priority, attempt_count, max_attempts, depends_on, fencing_token, scheduled_at, next_retry_at, created_at, updated_at, lease_owner, lease_expires_at, dispatched_at, COALESCE(submission_key,''), timeout_ns, traceparent, tracestate, submission_hash, payload_expired`
+const jobColumnsTail = `, priority, attempt_count, max_attempts, depends_on, fencing_token, scheduled_at, next_retry_at, created_at, updated_at, lease_owner, lease_expires_at, dispatched_at, COALESCE(submission_key,''), timeout_ns, traceparent, tracestate, submission_hash, payload_expired, last_lease_owner`
 const jobColumns = `id, tenant_id, name, status, payload` + jobColumnsTail
 const jobMetadataColumns = `id, tenant_id, name, status, NULL::jsonb` + jobColumnsTail
 
@@ -493,7 +493,7 @@ func (r *JobRepo) ClaimJob(ctx context.Context, id uuid.UUID, workerID string, t
 	var token int64
 	err := dbFromCtx(ctx, r.db).QueryRow(ctx, `UPDATE jobs
 		SET status='running', fencing_token=fencing_token+1,
-		lease_owner=$2, lease_expires_at=clock_timestamp()+make_interval(secs => $3)
+		lease_owner=$2, last_lease_owner=$2, lease_expires_at=clock_timestamp()+make_interval(secs => $3)
 		WHERE id=$1 AND status='pending' AND scheduled_at <= clock_timestamp()
 		AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
 		AND attempt_count < max_attempts

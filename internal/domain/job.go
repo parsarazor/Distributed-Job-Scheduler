@@ -80,6 +80,7 @@ type Job struct {
 	DependsOn      *uuid.UUID      `json:"depends_on,omitempty"`
 	FencingToken   int64           `json:"fencing_token"`
 	LeaseOwner     *string         `json:"lease_owner,omitempty"`
+	LastLeaseOwner *string         `json:"-"`
 	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
 	DispatchedAt   *time.Time      `json:"dispatched_at,omitempty"`
 	SubmissionKey  string          `json:"submission_key,omitempty"`

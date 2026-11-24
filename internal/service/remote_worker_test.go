@@ -152,15 +152,28 @@ func TestGetExecutionJob_ScopedToTheExecution(t *testing.T) {
 		t.Fatalf("lookup with another attempt's token: %v", err)
 	}
 	token := claimTestJob(t, s, job.ID, "owner")
-	for _, worker := range []string{"intruder", ""} {
+	for worker, want := range map[string]codes.Code{"intruder": codes.PermissionDenied, "": codes.InvalidArgument} {
 		req := &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: worker, FencingToken: token}
-		if _, err := client.GetExecutionJob(context.Background(), req); status.Code(err) != codes.Aborted {
+		if _, err := client.GetExecutionJob(context.Background(), req); status.Code(err) != want {
 			t.Fatalf("worker %q read another worker's execution: %v", worker, err)
 		}
 	}
 	resp, err := client.GetExecutionJob(context.Background(), &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: "owner", FencingToken: token})
 	if err != nil || resp.GetLeaseOwner() != "owner" || len(resp.GetJob().GetPayload()) != 0 {
 		t.Fatalf("owner lookup must return metadata without payload: %+v %v", resp, err)
+	}
+
+	// Once finished, only the worker that ran the attempt may confirm it.
+	if _, err := client.ReportJobCompletion(context.Background(), &apiv1.ReportJobCompletionRequest{JobId: job.ID.String(), WorkerId: "owner", FinalStatus: apiv1.JobStatus_JOB_STATUS_SUCCEEDED, FencingToken: token}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	finished := &apiv1.GetExecutionJobRequest{JobId: job.ID.String(), WorkerId: "intruder", FencingToken: token}
+	if _, err := client.GetExecutionJob(context.Background(), finished); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("another worker read a finished job: %v", err)
+	}
+	finished.WorkerId = "owner"
+	if resp, err := client.GetExecutionJob(context.Background(), finished); err != nil || resp.GetJob().GetStatus() != apiv1.JobStatus_JOB_STATUS_SUCCEEDED {
+		t.Fatalf("the worker that ran it must confirm completion: %+v %v", resp, err)
 	}
 }
 

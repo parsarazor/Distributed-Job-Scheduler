@@ -249,6 +249,10 @@ func projectJob(j *domain.Job, metadataOnly bool) *domain.Job {
 		v := *j.LeaseOwner
 		cp.LeaseOwner = &v
 	}
+	if j.LastLeaseOwner != nil {
+		v := *j.LastLeaseOwner
+		cp.LastLeaseOwner = &v
+	}
 	if j.LeaseExpiresAt != nil {
 		v := *j.LeaseExpiresAt
 		cp.LeaseExpiresAt = &v
@@ -677,6 +681,8 @@ func (r *JobRepo) ClaimJob(ctx context.Context, id uuid.UUID, workerID string, t
 	j.Status = domain.StatusRunning
 	j.FencingToken++
 	j.LeaseOwner = &workerID
+	last := workerID
+	j.LastLeaseOwner = &last
 	expires := now.Add(ttl)
 	j.LeaseExpiresAt = &expires
 	j.UpdatedAt = now

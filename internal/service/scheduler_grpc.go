@@ -351,10 +351,15 @@ func (s *SchedulerServer) GetExecutionJob(ctx context.Context, req *apiv1.GetExe
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
-	// The shared worker credential must not read arbitrary jobs: only the
-	// execution that holds (or just released) this attempt may look it up.
-	if job.FencingToken != req.FencingToken || (job.LeaseOwner != nil && *job.LeaseOwner != req.WorkerId) {
+	if job.FencingToken != req.FencingToken {
 		return nil, toGRPCError(domain.ErrLeaseLost)
+	}
+	// A worker may read a job it holds, one still waiting to be claimed, or a
+	// finished job it ran last (to confirm its completion was recorded).
+	switch {
+	case job.LeaseOwner != nil && *job.LeaseOwner != req.WorkerId,
+		job.LeaseOwner == nil && job.IsTerminal() && (job.LastLeaseOwner == nil || *job.LastLeaseOwner != req.WorkerId):
+		return nil, status.Error(codes.PermissionDenied, "job is not leased to this worker_id")
 	}
 	out := &apiv1.GetExecutionJobResponse{Job: DomainJobMetadataToProto(job), LeaseOwner: job.LeaseOwner}
 	if job.LeaseExpiresAt != nil {
