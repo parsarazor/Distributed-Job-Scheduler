@@ -10,7 +10,7 @@ Pretty simple flow:
 
 1. You submit a job via authenticated gRPC (`SubmitJob`). The job and audit event commit together. An optional `idempotency_key` returns the same job for identical retries from the same tenant; conflicting reuse returns `AlreadyExists`.
 2. A background loop locks ready jobs (`pending`, schedule and retry delay passed, dependencies met) with `FOR UPDATE SKIP LOCKED`, creates their outbox rows, and marks the attempts dispatched in one transaction. Only the outbox publisher talks to RabbitMQ. Each confirmation commits in its own bounded transaction; failed rows retry after exponential delays of 1–256 seconds. Messages contain only the job ID, attempt, fencing token and trace context.
-3. Workers consume the durable `jobs.execute` queue with prefetch equal to `MAX_CONCURRENCY`. Workers have no database access: each one asks the scheduler (`ClaimJobExecution`) to atomically claim the pending attempt in Postgres; that update mints its fencing token and lease. Lease renewal (`RenewJobLease`) and completion (`ReportJobCompletion`) also go through the scheduler. The message is acknowledged after the result commits. Duplicate and stale announcements cannot claim another attempt. Database polling remains available for the in-process demo.
+3. Each job name has its own durable queue, `jobs.execute.<name>` (names over 242 bytes, `quarantine` or starting with `h.` use `jobs.execute.h.<sha256 prefix>`). A worker consumes the queues of the job names it has handlers for, with prefetch equal to `MAX_CONCURRENCY` across all of them, so it never receives a job it cannot run. It also drains the legacy shared `jobs.execute` queue for announcements staged before this routing existed. Workers have no database access: each one asks the scheduler (`ClaimJobExecution`) to atomically claim the pending attempt in Postgres; that update mints its fencing token and lease. Lease renewal (`RenewJobLease`) and completion (`ReportJobCompletion`) also go through the scheduler. The message is acknowledged after the result commits. Duplicate and stale announcements cannot claim another attempt. Database polling remains available for the in-process demo.
 4. When done, the worker reports back with its fencing token. If the token doesn't match (lease expired, someone else took over), the write gets rejected instead of overwriting good data.
 5. Failed jobs go back to `pending` with exponential backoff + jitter. Run out of attempts and they go `dead` in Postgres. If a parent job dies, its dependents get cancelled automatically so they don't sit around forever.
 6. Confirmed attempts still pending after five minutes are announced again with a new fencing generation. Execution messages expire from the broker after five minutes; late generations cannot claim newer work. This repairs lost or recreated queues.
@@ -59,7 +59,7 @@ Provision a tenant before submitting jobs. Generate a random API key, store only
 
 `WORKER_TOKEN` is a single shared credential, deliberately: it authorizes *transport* operations (heartbeat, completion reports, `Execute` lookups) and grants **no** cross-tenant data access by itself. The authorization path for job payloads is:
 
-1. Dispatch is broadcast to a shared `jobs.execute` queue; workers claim by lease and fast-fail kinds they have no handler for (dead-lettered on first failure, not retried).
+1. Dispatch goes to the queue of the job's name; workers claim by lease. A job that arrives on the legacy shared queue without a handler fails fast (dead-lettered on first failure, not retried).
 2. `Execute`/`Heartbeat` verify the calling worker still holds the job's lease via the fencing token; a stale or lost lease returns the job payload to no one.
 3. Tenant payloads therefore flow only to workers that won the dispatch race for that job. `Execute` and `Heartbeat` are lease-scoped, and `ReportJobCompletion` is rejected unless the supplied worker ID and fencing token match the live lease. `GetWorkerStatus`, `DrainWorker` and `CancelExecution` are worker *control*-plane RPCs and require `ADMIN_TOKEN`, so the shared worker credential cannot read active-job metadata, cancel another execution or drain the fleet.
 
@@ -106,6 +106,12 @@ err = w.Run(ctx) // nil after a clean drain when ctx is cancelled
 - **Transport:** `Config.TLS` secures gRPC to the scheduler (system roots when nil). RabbitMQ TLS comes from the `amqps://` URL. `Insecure: true` (set by `ConfigFromEnv` for `APP_ENV=development`) allows `amqp://` and development credentials, and plaintext gRPC only when `TLS` is nil, so a configured `TLS` (e.g. from `SCHEDULER_CA_FILE`) is never downgraded.
 - **Boundary:** the SDK has no database driver or storage code; a test enforces this with `go list -deps`.
 - **Example:** [`examples/sendemail`](examples/sendemail) is the `send-email` handler `cmd/worker` registers in development.
+
+### Jobs no worker handles
+
+RabbitMQ refuses an announcement when no worker has declared the queue for its job name. The scheduler then puts the job back to pending and retries it a minute later, without counting a broker failure or using the publish retry budget. If no worker appears within `NO_WORKER_TIMEOUT` (24 h by default, at most 144 h, a day under the outbox retention; counted from the first refused announcement since the job last reached a worker queue or was requeued, so time blocked on a parent or retry backoff doesn't count), the job goes dead with `no worker for job name`; requeue it once a worker exists. Watch `scheduler_no_worker_deferrals_total` and `scheduler_no_worker_dead_jobs_total`. A job-name queue with no consumer for an hour is deleted, so a retired handler's jobs take this path too.
+
+**Upgrading:** deploy workers before schedulers. Workers keep draining the shared `jobs.execute` queue; if schedulers go first, their announcements wait as above until workers declare their queues.
 
 ## Worker credentials
 
@@ -154,6 +160,7 @@ Everything is env vars, see `internal/app/app.go`:
 | `LEASE_RESTART_GRACE` | On scheduler startup, extend lapsed running leases by this much so workers can renew them or report results they could not deliver during the outage | 30s |
 | `COMPLETION_RETRY_WINDOW` | How long a worker keeps retrying a finished job's result while the scheduler is unreachable | 1m |
 | `SHUTDOWN_TIMEOUT` | Worker only; how long shutdown waits for running handlers before cancelling them | 20s |
+| `NO_WORKER_TIMEOUT` | Scheduler only; how long a job whose name has no worker queue keeps waiting (retried every minute, without using publish retries) before it goes dead with `no worker for job name` | 24h |
 | `JOB_TIMEOUT` | Worker execution time cap; `timeout_ms` can request a shorter deadline | 5m |
 | `APP_ENV` | `development` explicitly permits local credentials and plaintext gRPC | production behavior |
 | `WORKER_TOKEN` | Bearer credential for `Execute`/`Heartbeat`/`ReportJobCompletion`; at least 32 visible ASCII characters in production | — |

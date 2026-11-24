@@ -268,7 +268,7 @@ func TestPostgresScheduler(t *testing.T) {
 			if err := json.Unmarshal(row.Payload, &announcement); err != nil {
 				t.Fatal(err)
 			}
-			if row.RoutingKey != "jobs.execute" || !ready[row.JobID] || announcement.ID != row.JobID || announcement.FencingToken != 0 || announcement.AttemptCount != 0 {
+			if !broker.IsJobTypeQueue(row.RoutingKey) || !ready[row.JobID] || announcement.ID != row.JobID || announcement.FencingToken != 0 || announcement.AttemptCount != 0 {
 				t.Fatalf("outbox contains an ineligible or malformed announcement: %+v payload=%s", row, row.Payload)
 			}
 			seen[row.JobID]++

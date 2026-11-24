@@ -175,3 +175,45 @@ func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDead
 	}
 	return ids, nil
 }
+
+// DeferUnroutable mirrors the PostgreSQL query.
+func (r *JobRepo) DeferUnroutable(ctx context.Context, id uuid.UUID, token int64, retryAfter, maxWait time.Duration) (bool, error) {
+	s := stateFromCtx(ctx, r.s)
+	if err := lockContext(ctx, &s.mu); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	j := s.jobs[id]
+	if j == nil || j.FencingToken != token || j.Status != domain.StatusPending || j.DispatchedAt == nil {
+		return false, domain.ErrJobNotClaimable
+	}
+	now := time.Now().UTC()
+	var after time.Time
+	for _, e := range s.events[id] {
+		if e.FromStatus == domain.StatusDead && e.ToStatus == domain.StatusPending && e.OccurredAt.After(after) {
+			after = e.OccurredAt
+		}
+	}
+	noWorker := func(e *domain.OutboxEvent) bool { return e.LastError != nil && *e.LastError == domain.ReasonNoWorker }
+	for _, e := range s.outbox {
+		if e.JobID == id && e.Published && !noWorker(e) && e.CreatedAt.After(after) {
+			after = e.CreatedAt
+		}
+	}
+	waitingSince := now
+	for _, e := range s.outbox {
+		if e.JobID == id && noWorker(e) && e.CreatedAt.After(after) && e.CreatedAt.Before(waitingSince) {
+			waitingSince = e.CreatedAt
+		}
+	}
+	j.DispatchedAt = nil
+	j.FencingToken++
+	j.UpdatedAt = now
+	if !waitingSince.After(now.Add(-maxWait)) {
+		j.Status, j.NextRetryAt = domain.StatusDead, nil
+		return true, nil
+	}
+	next := now.Add(retryAfter)
+	j.NextRetryAt = &next
+	return false, nil
+}

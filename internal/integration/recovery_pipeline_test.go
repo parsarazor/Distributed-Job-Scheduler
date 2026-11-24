@@ -21,6 +21,7 @@ func TestDurableReplacementWorkerFencesResumedOriginal(t *testing.T) {
 	b, ch := rabbitCase(t, rabbit)
 	f.sched = service.NewScheduler(f.repos.Jobs, f.repos.Tenants, f.repos.Events, f.repos.Outbox, f.repos.Tx, b, &domain.ConstantBackoff{Delay: 0})
 	job := f.submit(t, "failover", 3, nil, time.Time{})
+	declareJobQueues(t, ch, job.Name)
 	if n, err := f.sched.DispatchReady(f.ctx, 1); n != 1 || err != nil {
 		t.Fatalf("dispatch=%d err=%v", n, err)
 	}
@@ -38,7 +39,7 @@ func TestDurableReplacementWorkerFencesResumedOriginal(t *testing.T) {
 		err := old.HandleMessage(ctx, payload)
 		oldDone <- err
 		return err
-	})
+	}, job.Name)
 	old.SetIntakeCancel(oldRun.cancel)
 	receive(t, started)
 	old.CancelAll() // Simulate a process that stopped renewing but resumes later.
@@ -79,7 +80,7 @@ func TestDurableReplacementWorkerFencesResumedOriginal(t *testing.T) {
 		err := replacement.HandleMessage(ctx, payload)
 		completed <- err
 		return err
-	})
+	}, job.Name)
 	if err := receive(t, completed); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestDurableReplacementWorkerFencesResumedOriginal(t *testing.T) {
 		t.Fatalf("resumed original was not fenced: %v", err)
 	}
 	oldRun.stop(t)
-	awaitQueue(t, ch, "replacement consumed obsolete redelivery", func(q amqp.Queue) bool { return q.Messages == 0 })
+	awaitNamedQueue(t, ch, broker.JobQueue(job.Name), "replacement consumed obsolete redelivery", func(q amqp.Queue) bool { return q.Messages == 0 })
 	newRun.stop(t)
 	if runs.Load() != 1 {
 		t.Fatalf("replacement ran %d times", runs.Load())
@@ -118,6 +119,7 @@ func TestDurableLostQueueReannouncesPendingJob(t *testing.T) {
 	b, ch := rabbitCase(t, rabbit)
 	f.sched = f.scheduler(f.repos.Events, f.repos.Outbox, b)
 	job := f.submit(t, "queue-loss", 3, nil, time.Time{})
+	declareJobQueues(t, ch, job.Name)
 	if n, err := f.sched.DispatchReady(f.ctx, 1); n != 1 || err != nil {
 		t.Fatalf("dispatch=%d err=%v", n, err)
 	}
@@ -125,10 +127,11 @@ func TestDurableLostQueueReannouncesPendingJob(t *testing.T) {
 	if n, err := f.sched.ReconcileOutbox(f.ctx, 1); n != 1 || err != nil {
 		t.Fatalf("publish=%d err=%v", n, err)
 	}
-	if _, err := ch.QueueDelete(broker.JobsQueue, false, false, false); err != nil {
+	if _, err := ch.QueueDelete(broker.JobQueue(job.Name), false, false, false); err != nil {
 		t.Fatal(err)
 	}
-	recovered, _ := rabbitBroker(t, rabbit) // Recreate an empty canonical queue.
+	recovered, _ := rabbitBroker(t, rabbit)
+	declareJobQueues(t, ch, job.Name) // A restarted worker recreates its empty queue.
 	f.sched = f.scheduler(f.repos.Events, f.repos.Outbox, recovered)
 	f.sched.RedispatchAfter = time.Nanosecond
 	if n, err := f.sched.DispatchReady(f.ctx, 1); n != 1 || err != nil {
@@ -145,7 +148,7 @@ func TestDurableLostQueueReannouncesPendingJob(t *testing.T) {
 		err := worker.HandleMessage(ctx, payload)
 		done <- err
 		return err
-	})
+	}, job.Name)
 	if err := receive(t, done); err != nil {
 		t.Fatal(err)
 	}

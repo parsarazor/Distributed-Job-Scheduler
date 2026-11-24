@@ -33,6 +33,10 @@ type OutboxRepository interface {
 	// the message once the retry ceiling (domain.MaxOutboxRetries) is reached.
 	MarkFailed(ctx context.Context, id uuid.UUID, lastErr string) error
 
+	// MarkUnroutable settles an announcement the broker refused for lack of a
+	// queue: nothing was enqueued, so it is closed without using retry budget.
+	MarkUnroutable(ctx context.Context, id uuid.UUID, reason string) error
+
 	// MarkDelivered releases this generation's queued-delivery credit.
 	MarkDelivered(ctx context.Context, id uuid.UUID) error
 

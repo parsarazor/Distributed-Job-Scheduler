@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,9 @@ type publisherSession struct {
 type consumerSession struct {
 	*rabbitSession
 	deliveries <-chan amqp.Delivery
+	lost       <-chan struct{}
+	consumers  int
+	done       chan struct{}
 }
 
 // NewRabbitMQBroker declares the durable topic exchange and the durable
@@ -125,7 +129,18 @@ func (r *RabbitMQBroker) operationError(err error) error {
 	return err
 }
 
-func (r *RabbitMQBroker) openSession(ctx context.Context, queue, routingKey string) (*rabbitSession, error) {
+type binding struct{ queue, key string }
+
+// QueueArgs are the declaration arguments RabbitMQBroker uses for queue.
+// Redeclaring a queue with other arguments fails, so tests and tools must match.
+func QueueArgs(queue string) amqp.Table {
+	if IsJobTypeQueue(queue) {
+		return amqp.Table{"x-expires": int64(JobTypeQueueExpiry / time.Millisecond)}
+	}
+	return nil
+}
+
+func (r *RabbitMQBroker) openSession(ctx context.Context, bindings ...binding) (*rabbitSession, error) {
 	conn, err := r.dial(ctx, r.url)
 	if err != nil {
 		return nil, err
@@ -140,10 +155,15 @@ func (r *RabbitMQBroker) openSession(ctx context.Context, queue, routingKey stri
 		if err := ch.ExchangeDeclare(r.exchange, "topic", true, false, false, false, nil); err != nil {
 			return err
 		}
-		if _, err := ch.QueueDeclare(queue, true, false, false, false, nil); err != nil {
-			return err
+		for _, b := range bindings {
+			if _, err := ch.QueueDeclare(b.queue, true, false, false, false, QueueArgs(b.queue)); err != nil {
+				return err
+			}
+			if err := ch.QueueBind(b.queue, b.key, r.exchange, false, nil); err != nil {
+				return err
+			}
 		}
-		return ch.QueueBind(queue, routingKey, r.exchange, false, nil)
+		return nil
 	})
 	if err != nil {
 		conn.Close()
@@ -153,7 +173,7 @@ func (r *RabbitMQBroker) openSession(ctx context.Context, queue, routingKey stri
 }
 
 func (r *RabbitMQBroker) newPublisher(ctx context.Context) (*publisherSession, error) {
-	session, err := r.openSession(ctx, JobsQueue, JobsRoutingKey)
+	session, err := r.openSession(ctx, binding{JobsQueue, JobsRoutingKey})
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +236,7 @@ func (r *RabbitMQBroker) Publish(ctx context.Context, routingKey string, payload
 		// The default exchange routes by exact queue name. A wildcard binding
 		// on the public topic exchange must not confirm a missing jobs queue.
 		expiration := ""
-		if routingKey == JobsRoutingKey {
+		if routingKey == JobsRoutingKey || IsJobTypeQueue(routingKey) {
 			expiration = strconv.FormatInt(ExecutionMessageTTL.Milliseconds(), 10)
 		}
 		if err := publisher.ch.PublishWithContext(ctx, "", routingKey, true, false, amqp.Publishing{
@@ -309,25 +329,71 @@ func (p *publisherSession) waitConfirm(ctx context.Context) error {
 	}
 }
 
-func (r *RabbitMQBroker) newConsumer(ctx context.Context, queue, routingKey string, prefetch int) (*consumerSession, error) {
-	session, err := r.openSession(ctx, queue, routingKey)
+func consumerTagFor(i int) string {
+	if i == 0 {
+		return consumerTag
+	}
+	return consumerTag + "." + strconv.Itoa(i)
+}
+
+func (r *RabbitMQBroker) newConsumer(ctx context.Context, bindings []binding, prefetch int) (*consumerSession, error) {
+	session, err := r.openSession(ctx, bindings...)
 	if err != nil {
 		return nil, err
 	}
-	var deliveries <-chan amqp.Delivery
+	sources := make([]<-chan amqp.Delivery, 0, len(bindings))
 	err = withConnectionContext(ctx, session.conn, func() error {
-		if err := session.ch.Qos(prefetch, 0, false); err != nil {
+		// Several consumers share one channel-wide prefetch, so the number of
+		// unacknowledged deliveries never exceeds prefetch.
+		if err := session.ch.Qos(prefetch, 0, len(bindings) > 1); err != nil {
 			return err
 		}
-		var err error
-		deliveries, err = session.ch.Consume(queue, consumerTag, false, false, false, false, nil)
-		return err
+		for i, b := range bindings {
+			d, err := session.ch.Consume(b.queue, consumerTagFor(i), false, false, false, false, nil)
+			if err != nil {
+				return err
+			}
+			sources = append(sources, d)
+		}
+		return nil
 	})
 	if err != nil {
 		session.conn.Close()
 		return nil, err
 	}
-	return &consumerSession{rabbitSession: session, deliveries: deliveries}, nil
+	done := make(chan struct{})
+	deliveries, lost := mergeDeliveries(sources, done)
+	return &consumerSession{rabbitSession: session, deliveries: deliveries, lost: lost, consumers: len(bindings), done: done}, nil
+}
+
+// mergeDeliveries fans several subscriptions into one channel. Forwarders stop
+// at done; a delivery they still hold is requeued when the connection closes.
+// lost closes when any subscription ends (e.g. its queue was deleted), so the
+// session reconnects and redeclares every queue instead of silently shrinking.
+func mergeDeliveries(sources []<-chan amqp.Delivery, done <-chan struct{}) (<-chan amqp.Delivery, <-chan struct{}) {
+	if len(sources) == 1 {
+		return sources[0], nil
+	}
+	out := make(chan amqp.Delivery)
+	lost := make(chan struct{})
+	var lostOnce sync.Once
+	var wg sync.WaitGroup
+	for _, src := range sources {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer lostOnce.Do(func() { close(lost) })
+			for d := range src {
+				select {
+				case out <- d:
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+	go func() { wg.Wait(); close(out) }()
+	return out, lost
 }
 
 // Consume retries connection, topology and subscription failures with exponential
@@ -339,9 +405,34 @@ func (r *RabbitMQBroker) newConsumer(ctx context.Context, queue, routingKey stri
 // Handler contexts are independent of intake cancellation. Reconnection also
 // waits for the previous session's handlers, preserving the concurrency limit.
 func (r *RabbitMQBroker) Consume(ctx context.Context, queue, routingKey string, prefetch int, handler func(context.Context, []byte) error) error {
-	if queue == "" || handler == nil {
+	return r.consume(ctx, []binding{{queue, routingKey}}, prefetch, handler)
+}
+
+// ConsumeQueues consumes several queues, each bound to the topic exchange by
+// its own name, on one connection. prefetch bounds deliveries across all of
+// them; otherwise it behaves like Consume.
+func (r *RabbitMQBroker) ConsumeQueues(ctx context.Context, queues []string, prefetch int, handler func(context.Context, []byte) error) error {
+	bindings := make([]binding, 0, len(queues))
+	for _, q := range queues {
+		bindings = append(bindings, binding{q, q})
+	}
+	return r.consume(ctx, bindings, prefetch, handler)
+}
+
+func (r *RabbitMQBroker) consume(ctx context.Context, bindings []binding, prefetch int, handler func(context.Context, []byte) error) error {
+	if len(bindings) == 0 || handler == nil {
 		return errors.New("consumer requires a named queue and a handler")
 	}
+	seen := make(map[string]bool, len(bindings))
+	names := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		if b.queue == "" || seen[b.queue] {
+			return errors.New("consumer requires distinct named queues")
+		}
+		seen[b.queue] = true
+		names = append(names, b.queue)
+	}
+	queue := strings.Join(names, ",")
 	if prefetch <= 0 {
 		prefetch = 1
 	}
@@ -374,7 +465,7 @@ func (r *RabbitMQBroker) Consume(ctx context.Context, queue, routingKey string, 
 			return r.operationError(ctx.Err())
 		}
 		setupCtx, setupCancel := context.WithTimeout(intakeCtx, operationTimeout)
-		session, err := r.newConsumer(setupCtx, queue, routingKey, prefetch)
+		session, err := r.newConsumer(setupCtx, bindings, prefetch)
 		setupCancel()
 		if err == nil {
 			r.mu.Lock()
@@ -448,6 +539,9 @@ func (s *consumerSession) settle(delivery amqp.Delivery, handlerErr error) error
 
 func (s *consumerSession) run(intakeCtx, handlerCtx context.Context, prefetch int, handler func(context.Context, []byte) error, quarantine func(amqp.Delivery) error, onStop func()) error {
 	defer s.conn.Close()
+	if s.done != nil {
+		defer close(s.done)
+	}
 	work := make(chan amqp.Delivery)
 	settleErrors := make(chan error, 1)
 	var workers sync.WaitGroup
@@ -490,6 +584,8 @@ intake:
 			break intake
 		case <-s.closed:
 			break intake
+		case <-s.lost:
+			break intake
 		case <-settleErrors:
 			break intake
 		case delivery, ok := <-s.deliveries:
@@ -500,6 +596,8 @@ intake:
 			case <-intakeCtx.Done():
 				break intake
 			case <-s.closed:
+				break intake
+			case <-s.lost:
 				break intake
 			case <-settleErrors:
 				break intake
@@ -513,7 +611,14 @@ intake:
 		// Intake cancellation must not close the connection before handlers
 		// commit and acknowledge. Cancel has its own bounded shutdown context.
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
-		if err := withConnectionContext(ctx, s.conn, func() error { return s.ch.Cancel(consumerTag, false) }); err != nil {
+		if err := withConnectionContext(ctx, s.conn, func() error {
+			for i := range max(s.consumers, 1) {
+				if err := s.ch.Cancel(consumerTagFor(i), false); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			s.conn.Abort()
 		}
 		cancel()

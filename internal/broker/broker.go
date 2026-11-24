@@ -22,6 +22,7 @@ type Broker interface {
 // impose their own execution timeouts so that shutdown can finish.
 type Consumer interface {
 	Consume(ctx context.Context, queue, routingKey string, prefetch int, handler func(context.Context, []byte) error) error
+	ConsumeQueues(ctx context.Context, queues []string, prefetch int, handler func(context.Context, []byte) error) error
 }
 
 var ErrClosed = errors.New("broker is closed")

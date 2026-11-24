@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
 	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 )
@@ -71,7 +73,7 @@ func (r *JobRepo) fairReadyJobs(ctx context.Context, limit int) ([]*domain.Job, 
                 ) active)))
 		) j
 	)
-	SELECT j.id, j.attempt_count, j.fencing_token, j.traceparent, j.tracestate
+	SELECT j.id, j.name, j.attempt_count, j.fencing_token, j.traceparent, j.tracestate
 	FROM candidates c JOIN jobs j ON j.id=c.id
 	WHERE j.status='pending' AND j.dispatched_at IS NULL
 	AND j.attempt_count < j.max_attempts AND j.scheduled_at <= statement_timestamp()
@@ -86,7 +88,7 @@ func (r *JobRepo) fairReadyJobs(ctx context.Context, limit int) ([]*domain.Job, 
 	var result []*domain.Job
 	for rows.Next() {
 		job := new(domain.Job)
-		if err := rows.Scan(&job.ID, &job.AttemptCount, &job.FencingToken, &job.TraceParent, &job.TraceState); err != nil {
+		if err := rows.Scan(&job.ID, &job.Name, &job.AttemptCount, &job.FencingToken, &job.TraceParent, &job.TraceState); err != nil {
 			return nil, err
 		}
 		result = append(result, job)
@@ -158,4 +160,31 @@ func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDead
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// DeferUnroutable measures the wait from the job's first refused
+// announcement since it last reached a worker queue or was requeued, so time
+// spent blocked on a parent or retry backoff does not count.
+func (r *JobRepo) DeferUnroutable(ctx context.Context, id uuid.UUID, token int64, retryAfter, maxWait time.Duration) (bool, error) {
+	var status string
+	err := dbFromCtx(ctx, r.db).QueryRow(ctx, `WITH target AS (
+		SELECT j.id, COALESCE((
+			SELECT min(o.created_at) FROM job_outbox o
+			WHERE o.job_id=j.id AND o.last_error=$5
+			AND o.created_at > COALESCE((SELECT max(r.created_at) FROM job_outbox r
+				WHERE r.job_id=j.id AND r.published AND r.last_error IS DISTINCT FROM $5), '-infinity'::timestamptz)
+			AND o.created_at > COALESCE((SELECT max(e.occurred_at) FROM job_events e
+				WHERE e.job_id=j.id AND e.from_status='dead' AND e.to_status='pending'), '-infinity'::timestamptz)
+		), clock_timestamp()) <= clock_timestamp()-make_interval(secs => $4) AS expired
+		FROM jobs j WHERE j.id=$1 AND j.fencing_token=$2 AND j.status='pending' AND j.dispatched_at IS NOT NULL
+		FOR UPDATE OF j
+	)
+	UPDATE jobs j SET dispatched_at=NULL, fencing_token=j.fencing_token+1, updated_at=clock_timestamp(),
+		status=CASE WHEN t.expired THEN 'dead' ELSE j.status END,
+		next_retry_at=CASE WHEN t.expired THEN NULL ELSE clock_timestamp()+make_interval(secs => $3) END
+	FROM target t WHERE j.id=t.id RETURNING j.status`, id, token, retryAfter.Seconds(), maxWait.Seconds(), domain.ReasonNoWorker).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, domain.ErrJobNotClaimable
+	}
+	return status == string(domain.StatusDead), err
 }

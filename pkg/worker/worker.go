@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -187,6 +188,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		return errors.New("worker: Run called more than once")
 	}
 	defer func() { _ = w.conn.Close() }()
+	queues := w.queues()
+	if len(queues) == 1 {
+		return errors.New("worker: no handlers registered")
+	}
 	startCtx, cancelStart := context.WithTimeout(ctx, startupTimeout)
 	if err := w.probeScheduler(startCtx); err != nil {
 		cancelStart()
@@ -208,7 +213,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.svc.SetIntakeCancel(stopIntake)
 	intakeDone := make(chan error, 1)
 	go func() {
-		intakeDone <- rb.Consume(intakeCtx, broker.JobsQueue, broker.JobsRoutingKey, w.cfg.Concurrency, w.svc.HandleMessage)
+		intakeDone <- rb.ConsumeQueues(intakeCtx, queues, w.cfg.Concurrency, w.svc.HandleMessage)
 	}()
 	w.running.Store(true)
 	w.cfg.Logger.Info("worker consuming", "worker_id", w.cfg.WorkerID)
@@ -302,6 +307,19 @@ func (w *Worker) probeLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// queues lists the shared legacy queue, still drained for announcements
+// staged before job-name routing, and one queue per registered job name.
+func (w *Worker) queues() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	queues := make([]string, 0, len(w.names)+1)
+	for name := range w.names {
+		queues = append(queues, broker.JobQueue(name))
+	}
+	slices.Sort(queues)
+	return append([]string{broker.JobsQueue}, queues...)
 }
 
 func toJob(j *domain.Job) *Job {

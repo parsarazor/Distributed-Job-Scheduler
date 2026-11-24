@@ -30,13 +30,15 @@ var (
 	OutboxPublishFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_publish_failures_total", Help: "Failed outbox publish attempts."})
 	OutboxDeadLettered    = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_dead_lettered_total", Help: "Outbox announcements moved to the dead letter."})
 	OutboxExhaustedJobs   = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_outbox_exhausted_jobs_total", Help: "Jobs terminalized after their dispatch announcements exhausted the dead-letter cap."})
+	NoWorkerDeferrals     = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_no_worker_deferrals_total", Help: "Announcements refused because no worker queue exists for the job name; the job is retried later."})
+	NoWorkerDeadJobs      = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_no_worker_dead_jobs_total", Help: "Jobs dead after no worker handled their job name within NO_WORKER_TIMEOUT."})
 	StatsSampleFailures   = prometheus.NewCounter(prometheus.CounterOpts{Name: "scheduler_stats_sample_failures_total", Help: "Failed persistent metrics samples."})
 	StatsLastSuccess      = prometheus.NewGauge(prometheus.GaugeOpts{Name: "scheduler_stats_last_success_timestamp_seconds", Help: "Unix time of the last successful persistent metrics sample, or zero if none."})
 )
 
 func init() {
 	prometheus.MustRegister(Transitions, LeaseLosses, Latency, QueueDepth, OutboxLag, OutboxDepth,
-		HandlerErrors, OutboxPublishFailures, OutboxDeadLettered, OutboxExhaustedJobs, StatsSampleFailures, StatsLastSuccess)
+		HandlerErrors, OutboxPublishFailures, OutboxDeadLettered, OutboxExhaustedJobs, NoWorkerDeferrals, NoWorkerDeadJobs, StatsSampleFailures, StatsLastSuccess)
 	for _, kind := range []string{"error", "panic", "canceled", "timeout"} {
 		HandlerErrors.WithLabelValues(kind)
 	}
