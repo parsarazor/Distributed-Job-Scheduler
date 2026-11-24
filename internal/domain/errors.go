@@ -1,6 +1,10 @@
 package domain
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrInvalidInput indicates an invalid API field.
@@ -27,6 +31,16 @@ var (
 
 	// ErrLeaseLost indicates the execution no longer owns a live lease.
 	ErrLeaseLost = errors.New("job lease lost")
+
+	// ErrPermanentFailure marks a handler error that must not be retried.
+	ErrPermanentFailure = errors.New("permanent handler failure")
+
+	// ErrExecutionCanceled is the cancellation cause of an operator CancelExecution.
+	ErrExecutionCanceled = fmt.Errorf("execution canceled by operator: %w", context.Canceled)
+
+	// ErrWorkerShutdown is the cancellation cause when a worker's shutdown
+	// budget expires with the handler still running.
+	ErrWorkerShutdown = fmt.Errorf("worker shutting down: %w", context.Canceled)
 
 	// ErrInvalidLease indicates an empty owner or nonpositive lease duration.
 	ErrInvalidLease = errors.New("lease requires a worker ID and positive TTL")

@@ -302,6 +302,12 @@ func (s *Scheduler) CancelJob(ctx context.Context, id uuid.UUID, reason string) 
 // ReportCompletion serializes reports with claims/reaping and commits all
 // status, attempt, retry, audit and cascade effects in one transaction.
 func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, fencingToken int64, errMsg string) (int, error) {
+	return s.ReportCompletionWith(ctx, jobID, workerID, final, fencingToken, errMsg, false)
+}
+
+// ReportCompletionWith is ReportCompletion where nonRetryable dead-letters a
+// failed job without using its remaining retry budget.
+func (s *Scheduler) ReportCompletionWith(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, fencingToken int64, errMsg string, nonRetryable bool) (int, error) {
 	if final != domain.StatusSucceeded && final != domain.StatusFailed {
 		return 0, domain.ErrInvalidTransition
 	}
@@ -329,7 +335,7 @@ func (s *Scheduler) ReportCompletion(ctx context.Context, jobID uuid.UUID, worke
 			n, err = s.jobs.CountWaitingDependents(ctx, jobID)
 			return err
 		}
-		err = s.finishFailure(ctx, job, final == domain.StatusFailed && errMsg == domain.ReasonHandlerNotRegistered)
+		err = s.finishFailure(ctx, job, nonRetryable || errMsg == domain.ReasonHandlerNotRegistered)
 		persistedStatus = job.Status
 		return err
 	})

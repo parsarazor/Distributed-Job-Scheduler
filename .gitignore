@@ -4,9 +4,9 @@
 *.dll
 *.so
 *.dylib
-scheduler
-worker
-demo
+/scheduler
+/worker
+/demo
 /bin/
 /dist/
 

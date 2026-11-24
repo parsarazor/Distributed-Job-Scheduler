@@ -6,17 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/parsarazor/distributed-job-scheduler/internal/broker"
+	"github.com/parsarazor/distributed-job-scheduler/internal/domain"
 )
 
-const demoWorkerToken = "local-development-worker-token-change-me"
+const demoWorkerToken = domain.DemoWorkerToken
 
 type serverConfig struct {
 	development bool
@@ -108,11 +108,7 @@ func loadServerConfig(storage string) (serverConfig, error) {
 	return cfg, nil
 }
 
-func validProductionToken(token string) bool {
-	return len(token) >= 32 && token != demoWorkerToken && !strings.ContainsFunc(token, func(r rune) bool {
-		return r < '!' || r > '~'
-	})
-}
+func validProductionToken(token string) bool { return domain.ValidProductionToken(token) }
 
 func parseDatabaseConfig(raw string, development bool) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(raw)
@@ -186,33 +182,10 @@ func applyDatabaseDefaults(cfg *pgxpool.Config, lookup func(string) string) {
 }
 
 func validateRabbitURL(raw string, development bool) error {
-	uri, err := amqp.ParseURI(raw)
-	if err != nil {
-		return fmt.Errorf("invalid RABBITMQ_URL")
-	}
-	if development {
-		return nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil || uri.Scheme != "amqps" || u.Hostname() == "" {
-		return fmt.Errorf("RABBITMQ_URL requires amqps with an explicit hostname")
-	}
-	if u.User == nil || u.User.Username() == "" {
-		return fmt.Errorf("RABBITMQ_URL requires an explicit production credential")
-	}
-	password, _ := u.User.Password()
-	if password == "" || developmentPassword(password) {
-		return fmt.Errorf("RABBITMQ_URL requires a non-development password")
-	}
-	if (uri.CertFile == "") != (uri.KeyFile == "") {
-		return fmt.Errorf("RABBITMQ_URL requires both client certificate and key when configuring mutual TLS")
-	}
-	return nil
+	return broker.ValidateURL(raw, development)
 }
 
-func developmentPassword(password string) bool {
-	return password == "scheduler" || password == "guest"
-}
+func developmentPassword(password string) bool { return domain.DevelopmentPassword(password) }
 
 // ListenRPC binds the gRPC listener. Binding to a wider interface is explicit.
 func ListenRPC(defaultPort string) (net.Listener, error) {

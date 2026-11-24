@@ -21,7 +21,8 @@ type JobControl interface {
 	// ClaimExecution records the announcement's delivery and claims its attempt.
 	ClaimExecution(ctx context.Context, announcement *domain.Job, workerID string, ttl time.Duration) (*domain.Job, int64, error)
 	RenewLease(ctx context.Context, jobID uuid.UUID, workerID string, token int64, ttl time.Duration) error
-	ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string) error
+	// ReportCompletion settles the attempt; nonRetryable dead-letters a failure.
+	ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string, nonRetryable bool) error
 	// GetExecutionJob returns the stored job including its lease state. Remote
 	// lookups omit the payload and fail with ErrLeaseLost unless token is the
 	// job's current fencing token and any lease belongs to workerID.
@@ -78,8 +79,8 @@ func (c schedulerControl) RenewLease(ctx context.Context, jobID uuid.UUID, worke
 	return c.s.jobs.RenewLease(ctx, jobID, workerID, token, ttl)
 }
 
-func (c schedulerControl) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string) error {
-	_, err := c.s.ReportCompletion(ctx, jobID, workerID, final, token, message)
+func (c schedulerControl) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string, nonRetryable bool) error {
+	_, err := c.s.ReportCompletionWith(ctx, jobID, workerID, final, token, message, nonRetryable)
 	return err
 }
 
@@ -119,10 +120,10 @@ func (c *RemoteJobControl) RenewLease(ctx context.Context, jobID uuid.UUID, work
 	return fromGRPCError(err)
 }
 
-func (c *RemoteJobControl) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string) error {
+func (c *RemoteJobControl) ReportCompletion(ctx context.Context, jobID uuid.UUID, workerID string, final domain.JobStatus, token int64, message string, nonRetryable bool) error {
 	_, err := c.client.ReportJobCompletion(ctx, &apiv1.ReportJobCompletionRequest{
 		JobId: jobID.String(), WorkerId: workerID, FinalStatus: DomainToProtoStatus(final),
-		FencingToken: token, ErrorMessage: message,
+		FencingToken: token, ErrorMessage: message, NonRetryable: nonRetryable,
 	})
 	return fromGRPCError(err)
 }

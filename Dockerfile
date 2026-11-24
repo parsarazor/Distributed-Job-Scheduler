@@ -7,6 +7,7 @@ COPY cmd/worker ./cmd/worker
 COPY cmd/schedctl ./cmd/schedctl
 COPY internal ./internal
 COPY pkg ./pkg
+COPY examples ./examples
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -o /bin/scheduler ./cmd/scheduler && \
     CGO_ENABLED=0 go build -mod=readonly -trimpath -o /bin/worker ./cmd/worker && \
     CGO_ENABLED=0 go build -mod=readonly -trimpath -o /bin/schedctl ./cmd/schedctl

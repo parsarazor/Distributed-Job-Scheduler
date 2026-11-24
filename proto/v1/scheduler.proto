@@ -198,6 +198,9 @@ message ReportJobCompletionRequest {
   JobStatus final_status = 3;
   int64 fencing_token = 4;
   string error_message = 5;
+  // non_retryable dead-letters a FAILED job now instead of using its
+  // remaining retry budget. It is ignored for other statuses.
+  bool non_retryable = 6;
 }
 
 message ReportJobCompletionResponse {
