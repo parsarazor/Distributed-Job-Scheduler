@@ -83,10 +83,5 @@ func (r *JobRepo) RequeueDead(ctx context.Context, id uuid.UUID) (*domain.Job, e
 	j.LeaseOwner = nil
 	j.LeaseExpiresAt = nil
 	j.UpdatedAt = time.Now().UTC()
-	for eid, e := range s.outbox {
-		if e.JobID == id && e.DeadLettered {
-			delete(s.outbox, eid)
-		}
-	}
 	return cloneJob(j), nil
 }

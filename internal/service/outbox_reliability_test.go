@@ -302,4 +302,17 @@ func TestRequeueDead_ResetsOutboxDeadLetterBudget(t *testing.T) {
 	if got.Status != domain.StatusPending || got.DispatchedAt == nil {
 		t.Fatalf("requeued job must be dispatched again, got status=%q dispatched_at=%v", got.Status, got.DispatchedAt)
 	}
+	rows, err := b.Outbox.FetchUnpublished(ctx, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var history int
+	for _, e := range rows {
+		if e.JobID == job.ID && e.DeadLettered {
+			history++
+		}
+	}
+	if history != domain.MaxDeadLetteredDispatches {
+		t.Fatalf("dead-letter history must be retained, got %d rows", history)
+	}
 }

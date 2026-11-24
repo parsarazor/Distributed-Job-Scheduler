@@ -855,13 +855,22 @@ func TestLive_RequeueDeadResetsOutboxDeadLetterBudget(t *testing.T) {
 	if _, err := r.Jobs.RequeueDead(ctx, job.ID); err != nil {
 		t.Fatalf("requeue: %v", err)
 	}
+	if err := r.Events.Record(ctx, &domain.JobEvent{ID: uuid.New(), JobID: job.ID, FromStatus: domain.StatusDead, ToStatus: domain.StatusPending, OccurredAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("record requeue: %v", err)
+	}
 	if ids, err := r.Jobs.TerminalizeOutboxExhausted(ctx, 10, domain.MaxDeadLetteredDispatches); err != nil || slices.Contains(ids, job.ID) {
 		t.Fatalf("requeued job terminalized again: ids=%v err=%v", ids, err)
 	}
 	if got := liveGetJob(t, ctx, r, job.ID); got.Status != domain.StatusPending {
 		t.Fatalf("status=%q, want pending", got.Status)
 	}
-	if rows := liveOutboxRows(t, ctx, p, job.ID); len(rows) != 0 {
-		t.Fatalf("old dead letters kept: %v", rows)
+	if rows := liveOutboxRows(t, ctx, p, job.ID); len(rows) != domain.MaxDeadLetteredDispatches {
+		t.Fatalf("dead-letter history must be retained, got %d rows", len(rows))
+	}
+	for i := 0; i < domain.MaxDeadLetteredDispatches; i++ {
+		liveDeadLetter(t, ctx, r, job.ID, time.Now().UTC().Add(time.Second))
+	}
+	if ids, err := r.Jobs.TerminalizeOutboxExhausted(ctx, 10, domain.MaxDeadLetteredDispatches); err != nil || !slices.Contains(ids, job.ID) {
+		t.Fatalf("new dead letters after requeue must still count: ids=%v err=%v", ids, err)
 	}
 }

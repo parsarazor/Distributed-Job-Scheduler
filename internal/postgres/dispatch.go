@@ -125,7 +125,9 @@ func (r *JobRepo) RecoverStaleDispatches(ctx context.Context, limit int, age tim
 // TerminalizeOutboxExhausted fails pending jobs whose dispatch announcements
 // have dead-lettered maxDeadLettered times. RecoverStaleDispatches would
 // otherwise stage another announcement on every pass, and each stranded
-// dispatch keeps consuming one of the tenant's dispatch credits.
+// dispatch keeps consuming one of the tenant's dispatch credits. Dead letters
+// from before the job's last operator requeue are kept for audit but no longer
+// count, so a requeued job gets a fresh budget.
 func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDeadLettered int) ([]uuid.UUID, error) {
 	if limit <= 0 || maxDeadLettered <= 0 {
 		return nil, domain.ErrInvalidInput
@@ -134,6 +136,8 @@ func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDead
 		SELECT j.id FROM jobs j
 		JOIN job_outbox o ON o.job_id=j.id AND o.dead_lettered
 		WHERE j.status='pending'
+		AND o.created_at > COALESCE((SELECT max(e.occurred_at) FROM job_events e
+			WHERE e.job_id=j.id AND e.from_status='dead' AND e.to_status='pending'), '-infinity')
 		GROUP BY j.id
 		HAVING count(*) >= $1
 		ORDER BY min(j.updated_at), j.id LIMIT $2

@@ -139,9 +139,17 @@ func (r *JobRepo) TerminalizeOutboxExhausted(ctx context.Context, limit, maxDead
 		return nil, err
 	}
 	defer s.mu.Unlock()
+	requeuedAt := make(map[uuid.UUID]time.Time)
+	for id, events := range s.events {
+		for _, e := range events {
+			if e.FromStatus == domain.StatusDead && e.ToStatus == domain.StatusPending && e.OccurredAt.After(requeuedAt[id]) {
+				requeuedAt[id] = e.OccurredAt
+			}
+		}
+	}
 	dead := make(map[uuid.UUID]int)
 	for _, e := range s.outbox {
-		if e.DeadLettered {
+		if e.DeadLettered && e.CreatedAt.After(requeuedAt[e.JobID]) {
 			dead[e.JobID]++
 		}
 	}
